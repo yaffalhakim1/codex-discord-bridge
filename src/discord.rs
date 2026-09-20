@@ -71,6 +71,9 @@ impl EventHandler for DiscordHandler {
                         ),
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "stop", "Interrupt the running Codex turn in this channel."),
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "model", "List available models or set one for new threads.")
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::String, "set", "Model ID to use for new threads"),
@@ -182,6 +185,7 @@ impl DiscordHandler {
             Some("attach") => self.cmd_attach(&ctx, &cmd).await,
             Some("detach") => self.cmd_detach(&ctx, &cmd).await,
             Some("new") => self.cmd_new(&ctx, &cmd).await,
+            Some("stop") => self.cmd_stop(&ctx, &cmd).await,
             Some("model") => self.cmd_model(&ctx, &cmd).await,
             _ => {
                 let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
@@ -309,6 +313,39 @@ impl DiscordHandler {
                 )).await;
             }
         }
+    }
+    async fn cmd_stop(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let channel_id = cmd.channel_id.get();
+        let thread_id = match self.state.reverse_map.get(&channel_id) {
+            Some(v) => v.value().clone(),
+            None => {
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content("No thread mapped to this channel.").ephemeral(true),
+                )).await;
+                return;
+            }
+        };
+        let turn_id = match self.state.last_turn.get(&channel_id) {
+            Some(v) => v.value().clone(),
+            None => {
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content("No active turn.").ephemeral(true),
+                )).await;
+                return;
+            }
+        };
+        let codex = self.state.codex.read().await;
+        let result = match codex.as_ref() {
+            Some(c) => c.interrupt_turn(&thread_id, &turn_id).await,
+            None => Err("Codex not connected.".into()),
+        };
+        let content = match result {
+            Ok(()) => "🛑 Turn interrupted.".to_string(),
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
     }
     async fn cmd_model(&self, ctx: &Context, cmd: &CommandInteraction) {
         // Optional "set" option
