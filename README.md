@@ -107,3 +107,25 @@ The bridge must run on the same machine as Codex. Your PC does the work; Discord
 ## Resource usage
 
 One 14MB binary. The only other process is `codex app-server` at 80 to 100MB, which Codex itself spawns.
+
+## Roadmap
+
+Ordered by implementation priority.
+
+### Phase 1: Usability
+
+1. **Persist thread mappings** — save the channel-to-thread map to `data/state.json` so restarting the bridge doesn't lose your mappings.
+2. **`/codex stop`** — interrupt the running turn on the mapped thread (`turn/interrupt`).
+3. **`/codex threads`** — list recent Codex threads with IDs so you can `/codex attach` without digging through logs.
+
+### Phase 2: Better interaction
+
+4. **Steering** — `/codex send mode:steer` redirects the active turn instead of queueing (`turn/steer`).
+5. **Approval timeouts** — expire approval cards after 30 minutes and disable the buttons.
+6. **Live streaming** — buffer agent message deltas and edit one Discord message as Codex types.
+
+### Phase 3: Polish
+
+7. **Config file** — `bridge.toml` to toggle what mirrors (file edits, reasoning, command output).
+8. **Auto-created threads** — one Discord thread per Codex thread under a category.
+9. **Image attachments** — send screenshots from your phone; the protocol accepts `input_image`.
