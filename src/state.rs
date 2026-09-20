@@ -252,6 +252,11 @@ impl BridgeState {
             .get(token)
             .map(|a| a.value().clone())
             .ok_or_else(|| "Approval not found or already resolved.".to_string())?;
+        // Expire after 30 minutes
+        if approval.created_at.elapsed() > std::time::Duration::from_secs(1800) {
+            self.approvals.remove(token);
+            return Err("This approval request has expired.".to_string());
+        }
         let codex = self.codex.read().await;
         let codex = codex
             .as_ref()
