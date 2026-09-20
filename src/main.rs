@@ -317,6 +317,7 @@ fn handle_auto_thread(
     let name = thread
         .name
         .clone()
+        .filter(|s| !s.trim().is_empty())
         .or_else(|| thread.preview.as_ref().map(|p| {
             let t: String = p.chars().take(40).collect();
             if p.chars().count() > 40 { format!("{t}…") } else { t }
