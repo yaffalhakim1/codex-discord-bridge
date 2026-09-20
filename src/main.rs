@@ -3,7 +3,7 @@ mod config;
 mod discord;
 mod state;
 
-use serenity::all::{ChannelId, CreateMessage};
+use serenity::all::{ChannelId, CreateMessage, MessageId};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
@@ -12,12 +12,14 @@ use tracing::{debug, error, info, warn};
 
 use codex::{CodexClient, CodexEvent};
 use config::Config;
-use state::BridgeState;
+use state::{BridgeState, StreamState};
 
 /// A message to post to a Discord channel from the Codex event loop.
 #[derive(Debug)]
 pub enum DiscordOutbound {
     Plain { channel_id: u64, content: String },
+    EditStream { channel_id: u64, message_id: u64, content: String },
+    StartStream { channel_id: u64, content: String, thread_id: String },
     ApprovalCard { channel_id: u64, token: String, title: String, detail: String },
 }
 
@@ -108,9 +110,9 @@ async fn main() {
 
     // Discord HTTP shard for outbound posts from the codex event loop
     let http = discord_client.http.clone();
-    let outbound_state = state.clone();
 
     // Outbound poster task: receives DiscordOutbound and sends via serenity http
+    let state_for_poster = state.clone();
     let poster = tokio::spawn(async move {
         while let Some(msg) = outbound_rx.recv().await {
             match msg {
@@ -123,6 +125,32 @@ async fn main() {
                     let _ = ChannelId::new(channel_id)
                         .send_message(&http, CreateMessage::new().content(content))
                         .await;
+                }
+                DiscordOutbound::StartStream { channel_id, content, thread_id } => {
+                    match ChannelId::new(channel_id)
+                        .send_message(&http, CreateMessage::new().content(content))
+                        .await
+                    {
+                        Ok(msg) => {
+                            if let Some(mut st) = state_for_poster.streams.get_mut(&thread_id) {
+                                st.discord_message_id = Some(msg.id.get());
+                            }
+                        }
+                        Err(e) => error!("Failed to start stream: {e}"),
+                    }
+                }
+                DiscordOutbound::EditStream { channel_id, message_id, content } => {
+                    let content = if content.len() > 1900 {
+                        format!("{}\n… (truncated)", &content[..1900])
+                    } else {
+                        content
+                    };
+                    if let Err(e) = ChannelId::new(channel_id)
+                        .edit_message(&http, MessageId::new(message_id), serenity::builder::EditMessage::new().content(content))
+                        .await
+                    {
+                        debug!("Stream edit failed (may be rate-limited): {e}");
+                    }
                 }
                 DiscordOutbound::ApprovalCard { channel_id, token, title, detail } => {
                     if let Err(e) = discord::post_approval_card(&http, channel_id, &title, &detail, &token).await {
@@ -141,7 +169,7 @@ async fn main() {
 
     // Codex event loop
     while let Some(event) = event_rx.recv().await {
-        handle_codex_event(&event, &outbound_state, &outbound_tx).await;
+        handle_codex_event(&event, &state, &outbound_tx).await;
     }
 
     // Cleanup
@@ -191,7 +219,9 @@ async fn handle_codex_event(
                 mirror_item(channel_id, item_type, item, outbound_tx);
             }
         }
-        CodexEvent::AgentMessageDelta { .. } => {}
+        CodexEvent::AgentMessageDelta { thread_id, delta } => {
+            handle_stream_delta(thread_id, delta, state, outbound_tx);
+        }
         CodexEvent::ApprovalRequest(req) => {
             info!("[bridge] approval request for thread {}", req.thread_id);
             handle_approval(req, state, outbound_tx);
@@ -221,6 +251,45 @@ fn mirror_item(
     let _ = outbound_tx.send(DiscordOutbound::Plain { channel_id, content });
 }
 
+fn handle_stream_delta(
+    thread_id: &str,
+    delta: &str,
+    state: &Arc<BridgeState>,
+    outbound_tx: &mpsc::UnboundedSender<DiscordOutbound>,
+) {
+    const DEBOUNCE_MS: u128 = 1500;
+    const MAX_LEN: usize = 1900;
+    let channel_id = match state.thread_map.get(thread_id) {
+        Some(m) => m.discord_channel_id,
+        None => return,
+    };
+    let mut entry = state.streams.entry(thread_id.to_string()).or_insert(StreamState {
+        text: String::new(),
+        discord_message_id: None,
+        last_flush: None,
+        dirty: false,
+    });
+    entry.text.push_str(delta);
+    entry.dirty = true;
+    let now = std::time::Instant::now();
+    let elapsed_ok = entry.last_flush.map(|t| now.duration_since(t).as_millis() >= DEBOUNCE_MS).unwrap_or(true);
+    let near_limit = entry.text.len() >= MAX_LEN;
+    if elapsed_ok || near_limit {
+        let text = std::mem::take(&mut entry.text);
+        entry.dirty = false;
+        entry.last_flush = Some(now);
+        let mid = entry.discord_message_id;
+        drop(entry);
+        match mid {
+            Some(id) => {
+                let _ = outbound_tx.send(DiscordOutbound::EditStream { channel_id, message_id: id, content: text });
+            }
+            None => {
+                let _ = outbound_tx.send(DiscordOutbound::StartStream { channel_id, content: text, thread_id: thread_id.to_string() });
+            }
+        }
+    }
+}
 fn handle_approval(
     req: &codex::ApprovalRequest,
     state: &Arc<BridgeState>,

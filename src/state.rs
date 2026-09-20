@@ -14,6 +14,14 @@ pub struct ThreadMapping {
     pub last_activity_at: Option<i64>,
 }
 
+#[derive(Debug)]
+pub struct StreamState {
+    pub text: String,
+    pub discord_message_id: Option<u64>,
+    pub last_flush: Option<std::time::Instant>,
+    pub dirty: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingApproval {
     pub token: String,
@@ -47,6 +55,8 @@ pub struct BridgeState {
     /// channel_id → latest codex turn_id (for steering)
     pub last_turn: DashMap<u64, String>,
     pub default_model: tokio::sync::Mutex<Option<String>>,
+    /// thread_id -> (accumulated_text, discord_message_id, last_flush)
+    pub streams: DashMap<String, StreamState>,
     pub event_tx: mpsc::UnboundedSender<CodexEvent>,
 }
 
@@ -62,6 +72,7 @@ impl BridgeState {
             write_queue: DashMap::new(),
             last_turn: DashMap::new(),
             default_model: tokio::sync::Mutex::new(None),
+            streams: DashMap::new(),
             event_tx,
         })
     }
