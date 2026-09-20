@@ -213,7 +213,7 @@ impl BridgeState {
             self.write_queue.entry(codex_id.clone()).or_default().push(wb);
             Ok(Some("queued".to_string()))
         } else {
-            codex.start_turn(&codex_id, text).await?;
+            self.start_turn_resilient(codex, &codex_id, text).await?;
             Ok(Some("sent".to_string()))
         }
     }
@@ -233,7 +233,12 @@ impl BridgeState {
         let codex = codex
             .as_ref()
             .ok_or_else(|| "Codex client not connected.".to_string())?;
-        codex.start_turn_with_content(&codex_id, text, image_urls).await?;
+        if let Err(e) = codex.start_turn_with_content(&codex_id, text, image_urls).await {
+            if e.contains("not found") || e.contains("no rollout") {
+                codex.resume_thread(&codex_id).await?;
+                codex.start_turn_with_content(&codex_id, text, image_urls).await?;
+            } else { return Err(e); }
+        }
         Ok(Some("sent".to_string()))
     }
     pub async fn steer_to_codex(&self, discord_channel_id: &u64, text: &str) -> Result<Option<String>, String> {
@@ -251,7 +256,7 @@ impl BridgeState {
             codex.steer_turn(&codex_id, &turn_id, text).await?;
             Ok(Some("steered".to_string()))
         } else {
-            codex.start_turn(&codex_id, text).await?;
+            self.start_turn_resilient(codex, &codex_id, text).await?;
             Ok(Some("sent".to_string()))
         }
     }
@@ -288,7 +293,7 @@ impl BridgeState {
         self.map_thread(&thread_id, *discord_channel_id);
         let codex = self.codex.read().await;
         if let Some(codex) = codex.as_ref() {
-            codex.start_turn(&thread_id, prompt).await?;
+            self.start_turn_resilient(codex, &thread_id, prompt).await?;
         }
         self.last_turn.insert(*discord_channel_id, thread_id.clone());
         Ok(None)
