@@ -212,12 +212,12 @@ fn mirror_item(
         "agentMessage" => {
             let text = item["text"].as_str().unwrap_or("");
             if text.is_empty() { return; }
-            format!("🤖 **Codex:**\n{text}")
+            text.to_string()
         }
         "userMessage" => {
             let text = item["content"][0]["text"].as_str().unwrap_or("");
             if text.is_empty() { return; }
-            format!("👤 **You:**\n{text}")
+            text.to_string()
         }
         "commandExecution" => {
             let cmd = item["command"].as_str().unwrap_or("");
