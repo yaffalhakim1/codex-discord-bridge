@@ -270,7 +270,7 @@ impl DiscordHandler {
         // Second option is optional cwd
         let cwd = cmd.data.options.get(1).and_then(|o| {
             if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
-        }).unwrap_or_else(|| std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default());
+        }).unwrap_or_else(|| std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default());
 
         let codex = self.state.codex.read().await;
         let codex = match codex.as_ref() {

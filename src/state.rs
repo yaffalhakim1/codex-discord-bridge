@@ -162,8 +162,8 @@ impl BridgeState {
         let codex = codex
             .as_ref()
             .ok_or_else(|| "Codex client not connected.".to_string())?;
-        let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
+        let cwd = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
         let model = model.map(String::from).or_else(|| self.default_model.blocking_lock().clone());
         let thread_id = codex.start_thread(&cwd, "on-request", "read-only", model.as_deref()).await?;
