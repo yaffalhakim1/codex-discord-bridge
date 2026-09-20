@@ -127,6 +127,13 @@ impl BridgeState {
         info!("[state] loaded {} mappings from disk", self.thread_map.len());
     }
     pub fn map_thread(&self, codex_id: &str, discord_channel_id: u64) {
+        // If this channel was mapped to a different thread, drop the stale mapping.
+        if let Some(prev) = self.reverse_map.get(&discord_channel_id) {
+            let prev_id = prev.value().clone();
+            if prev_id != codex_id {
+                self.thread_map.remove(&prev_id);
+            }
+        }
         let entry = ThreadMapping {
             codex_thread_id: codex_id.to_string(),
             discord_channel_id,

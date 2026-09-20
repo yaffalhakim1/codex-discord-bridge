@@ -151,6 +151,7 @@ impl EventHandler for DiscordHandler {
             .to_string();
         if text.is_empty() { return; }
 
+
         let channel_id = msg.channel_id.get();
         let mapped = self.state.reverse_map.contains_key(&channel_id);
 
@@ -158,15 +159,9 @@ impl EventHandler for DiscordHandler {
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
         let image_urls: Vec<String> = msg.attachments.iter().map(|a| a.url.clone()).collect();
-        let result = if mapped {
-            if image_urls.is_empty() {
-                self.state.send_to_codex(&channel_id, &text).await
-            } else {
-                self.state.send_to_codex_with_images(&channel_id, &text, &image_urls).await
-            }
-        } else {
-            self.state.start_new_thread_in_channel(&channel_id, &text, None).await
-        };
+        // Every free-form message spawns a fresh Codex thread (stateless chat).
+        let result = self.state.start_new_thread_in_channel(&channel_id, &text, None).await;
+
 
         if let Err(e) = result {
             let _ = msg.reply(&ctx.http, format!("❌ {e}")).await;
