@@ -41,6 +41,18 @@ pub struct BridgeConfig {
     pub mirror: MirrorConfig,
     pub stream: StreamConfig,
     pub approvals: ApprovalsConfig,
+    pub auto_thread: AutoThreadConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AutoThreadConfig {
+    pub enabled: bool,
+    pub category_id: Option<u64>,
+}
+
+impl Default for AutoThreadConfig {
+    fn default() -> Self { Self { enabled: false, category_id: None } }
 }
 
 impl BridgeConfig {

@@ -23,6 +23,7 @@ pub enum DiscordOutbound {
     Plain { channel_id: u64, content: String },
     EditStream { channel_id: u64, message_id: u64, content: String },
     StartStream { channel_id: u64, content: String, thread_id: String },
+    CreateThread { category_id: u64, name: String, codex_thread_id: String },
     ApprovalCard { channel_id: u64, token: String, title: String, detail: String },
 }
 
@@ -157,6 +158,32 @@ async fn main() {
                         debug!("Stream edit failed (may be rate-limited): {e}");
                     }
                 }
+                DiscordOutbound::CreateThread { category_id, name, codex_thread_id } => {
+                    // Create a public thread; Discord needs a parent message or channel.
+                    // We create a new forum-style thread via the guild API: start from a channel.
+                    // Simplest supported path: create thread with a starter message in the category's channel.
+                    // Serenity 0.12: GuildChannel::create_thread requires a parent channel.
+                    // We use REST directly: POST /channels/{parent}/threads with name + type.
+                    // category_id here is treated as a TEXT CHANNEL ID to hang the thread off.
+                    let body = serde_json::json!({
+                        "name": name,
+                        "type": 11, // PUBLIC_THREAD
+                        "auto_archive_duration": 1440
+                    });
+                    let payload = serde_json::json!({
+                        "name": name,
+                        "type": 11, // PUBLIC_THREAD
+                        "auto_archive_duration": 1440
+                    });
+                    match http.create_thread(ChannelId::new(category_id), &payload, None).await {
+                        Ok(ch) => {
+                            let new_id = ch.id.get();
+                            state_for_poster.map_thread(&codex_thread_id, new_id);
+                            info!("[autothread] created Discord thread {new_id} for Codex {codex_thread_id}");
+                        }
+                        Err(e) => error!("[autothread] failed to create thread: {e}"),
+                    }
+                }
                 DiscordOutbound::ApprovalCard { channel_id, token, title, detail } => {
                     if let Err(e) = discord::post_approval_card(&http, channel_id, &title, &detail, &token).await {
                         error!("Failed to post approval card: {e}");
@@ -191,6 +218,7 @@ async fn handle_codex_event(
     match event {
         CodexEvent::ThreadStarted(thread) => {
             debug!("[bridge] thread started: {}", thread.id);
+            handle_auto_thread(thread, state, outbound_tx);
         }
         CodexEvent::ThreadStatusChanged { thread_id, status } => {
             let status_type = status["type"].as_str().unwrap_or("");
@@ -265,6 +293,36 @@ fn mirror_item(
     let _ = outbound_tx.send(DiscordOutbound::Plain { channel_id, content });
 }
 
+fn handle_auto_thread(
+    thread: &codex::ThreadInfo,
+    state: &Arc<BridgeState>,
+    outbound_tx: &mpsc::UnboundedSender<DiscordOutbound>,
+) {
+    let cfg = BRIDGE_CFG.get();
+    let (enabled, category_id) = match cfg {
+        Some(c) => (c.auto_thread.enabled, c.auto_thread.category_id),
+        None => (false, None),
+    };
+    if !enabled { return; }
+    if state.thread_map.contains_key(&thread.id) { return; }
+    let category = match category_id {
+        Some(c) => c,
+        None => return,
+    };
+    let name = thread
+        .name
+        .clone()
+        .or_else(|| thread.preview.as_ref().map(|p| {
+            let t: String = p.chars().take(40).collect();
+            if p.chars().count() > 40 { format!("{t}…") } else { t }
+        }))
+        .unwrap_or_else(|| "Codex thread".to_string());
+    let _ = outbound_tx.send(DiscordOutbound::CreateThread {
+        category_id: category,
+        name,
+        codex_thread_id: thread.id.clone(),
+    });
+}
 fn handle_stream_delta(
     thread_id: &str,
     delta: &str,

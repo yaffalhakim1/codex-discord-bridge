@@ -10,5 +10,9 @@
   },
   "approvals": {
     "ttlMinutes": 30
+  },
+  "autoThread": {
+    "enabled": false,
+    "categoryId": null
   }
 }
