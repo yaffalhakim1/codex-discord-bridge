@@ -160,7 +160,16 @@ impl EventHandler for DiscordHandler {
 
         let image_urls: Vec<String> = msg.attachments.iter().map(|a| a.url.clone()).collect();
         // Every free-form message spawns a fresh Codex thread (stateless chat).
-        let result = self.state.start_new_thread_in_channel(&channel_id, &text, None).await;
+        // With autoThread on, the Discord thread is created by the ThreadStarted
+        // handler and mapping happens there instead of to this channel.
+        let auto = self.state.auto_thread.lock().ok().map(|g| g.clone());
+        let result: Result<Option<String>, String> = match auto {
+            Some(cfg) if cfg.enabled && cfg.category_id.is_some() => {
+                let _ = image_urls;
+                self.state.start_thread_unmapped(&text).await.map(|_| None)
+            }
+            _ => self.state.start_new_thread_in_channel(&channel_id, &text, None).await,
+        };
 
 
         if let Err(e) = result {
