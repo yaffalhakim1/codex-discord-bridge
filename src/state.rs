@@ -54,7 +54,7 @@ pub struct BridgeState {
     pub write_queue: DashMap<String, Vec<PendingWriteBack>>,
     /// channel_id → latest codex turn_id (for steering)
     pub last_turn: DashMap<u64, String>,
-    pub default_model: tokio::sync::Mutex<Option<String>>,
+    pub default_model: std::sync::Mutex<Option<String>>,
     /// thread_id -> (accumulated_text, discord_message_id, last_flush)
     pub streams: DashMap<String, StreamState>,
     pub event_tx: mpsc::UnboundedSender<CodexEvent>,
@@ -71,7 +71,7 @@ impl BridgeState {
             approvals: DashMap::new(),
             write_queue: DashMap::new(),
             last_turn: DashMap::new(),
-            default_model: tokio::sync::Mutex::new(None),
+            default_model: std::sync::Mutex::new(None),
             streams: DashMap::new(),
             event_tx,
         })
@@ -81,7 +81,7 @@ impl BridgeState {
 
     pub fn save_state(&self) {
         let entries: Vec<ThreadMapping> = self.thread_map.iter().map(|e| e.value().clone()).collect();
-        let default_model = self.default_model.blocking_lock().clone();
+        let default_model = self.default_model.lock().ok().and_then(|g| g.clone());
         let json = serde_json::json!({
             "thread_map": entries,
             "default_model": default_model,
@@ -122,7 +122,7 @@ impl BridgeState {
             }
         }
         if let Some(m) = json["default_model"].as_str() {
-            *self.default_model.blocking_lock() = Some(m.to_string());
+            if let Ok(mut g) = self.default_model.lock() { *g = Some(m.to_string()); }
         }
         info!("[state] loaded {} mappings from disk", self.thread_map.len());
     }
@@ -264,7 +264,7 @@ impl BridgeState {
         let cwd = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
-        let model = model.map(String::from).or_else(|| self.default_model.blocking_lock().clone());
+        let model = match model { Some(m) => Some(m.to_string()), None => self.default_model.lock().ok().and_then(|g| g.clone()) };
         let thread_id = codex.start_thread(&cwd, "on-request", "read-only", model.as_deref()).await?;
         drop(codex);
         self.map_thread(&thread_id, *discord_channel_id);

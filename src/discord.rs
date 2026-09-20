@@ -415,7 +415,7 @@ impl DiscordHandler {
                     // Verify model exists
                     let found = models.iter().any(|m| m["id"].as_str() == Some(target.as_str()) || m["model"].as_str() == Some(target.as_str()));
                     if found {
-                        self.state.default_model.lock().await.replace(target.clone());
+                        if let Ok(mut g) = self.state.default_model.lock() { *g = Some(target.clone()); }
                         let content = format!("✅ New threads will use model `{target}`.");
                         let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
                             CreateInteractionResponseMessage::new().content(content).ephemeral(true),
@@ -435,7 +435,7 @@ impl DiscordHandler {
                         let marker = if is_default { " ⭐" } else { "" };
                         list.push_str(&format!("• `{id}`{marker} — {display}\n"));
                     }
-                    let current = self.state.default_model.lock().await.clone();
+                    let current = self.state.default_model.lock().ok().and_then(|g| g.clone());
                     if let Some(cur) = current {
                         list.push_str(&format!("\n**Current default:** `{cur}`"));
                     }
