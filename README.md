@@ -100,6 +100,19 @@ The bridge stays quiet when you send a message. Codex's reply appears when it's 
 | `/codex status` | Lists mapped threads |
 | `/codex retract` | Pulls back the last queued message |
 
+## Configuration
+
+Optional `bridge.json` next to the binary. Copy `bridge.json.example` and edit. All keys are optional; defaults shown in the example.
+
+| Key | Default | What it does |
+|---|---|---|
+| `mirror.agentMessages` | `true` | Post Codex replies into the mapped channel |
+| `mirror.userMessages` | `false` | Echo your own messages (usually noise) |
+| `mirror.commands` | `false` | Post command executions |
+| `mirror.fileChanges` | `false` | Post file edits |
+| `stream.live` | `true` | Edit one message live as Codex types |
+| `approvals.ttlMinutes` | `30` | Approval buttons stop working after this |
+
 ## Running it
 
 The bridge must run on the same machine as Codex. Your PC does the work; Discord is the remote control. Keep the bridge running while you're away, and it forwards everything between Discord and Codex.
