@@ -248,11 +248,11 @@ impl CodexClient {
             }
         });
         client.send_raw(init).await?;
-        let result = client
-            .request_inner("initialized", json!({}), None)
+        client
+            .notify("initialized", json!({}))
             .await
-            .map_err(|e| format!("initialize failed: {e}"))?;
-        debug!("[codex] initialized: {result:?}");
+            .map_err(|e| format!("initialized notify failed: {e}"))?;
+        debug!("[codex] initialized notification sent");
         info!("Codex app-server client connected and initialized.");
 
         Ok(client)
