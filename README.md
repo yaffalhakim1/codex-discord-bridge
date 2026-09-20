@@ -22,7 +22,17 @@ Monitor Codex work, approve/reject commands and file edits, and send messages ba
 
 Required bot permissions: `View Channels`, `Send Messages`, `Send Messages in Threads`, `Read Message History`.
 
-## Usage
+## Free-form Chat
+
+You don't need slash commands for normal conversation:
+
+- **@mention the bot** in any server channel — first message starts a new Codex thread mapped to that channel
+- **Reply to a bot message** — continues the same thread
+- **DM the bot** — each DM channel gets its own Codex thread
+
+Codex responses are mirrored back into the same channel.
+
+## Slash Commands
 
 - `/codex attach <thread_id>` — map a Codex thread to the current Discord channel
 - `/codex detach <thread_id>` — remove the mapping

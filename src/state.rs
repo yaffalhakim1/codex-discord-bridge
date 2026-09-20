@@ -150,6 +150,28 @@ impl BridgeState {
         Ok(None)
     }
 
+    pub async fn start_new_thread_in_channel(
+        &self,
+        discord_channel_id: &u64,
+        prompt: &str,
+    ) -> Result<Option<String>, String> {
+        let codex = self.codex.read().await;
+        let codex = codex
+            .as_ref()
+            .ok_or_else(|| "Codex client not connected.".to_string())?;
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let thread_id = codex.start_thread(&cwd, "on-request", "read-only").await?;
+        drop(codex);
+        self.map_thread(&thread_id, *discord_channel_id);
+        let codex = self.codex.read().await;
+        if let Some(codex) = codex.as_ref() {
+            codex.start_turn(&thread_id, prompt).await?;
+        }
+        self.last_turn.insert(*discord_channel_id, thread_id.clone());
+        Ok(Some(format!("New Codex thread `{}` started.", &thread_id[..12.min(thread_id.len())])))
+    }
     pub async fn handle_approval_decision(&self, token: &str, decision: &str) -> Result<(), String> {
         let approval = self
             .approvals

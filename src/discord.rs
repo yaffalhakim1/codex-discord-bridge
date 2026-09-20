@@ -1,6 +1,7 @@
 use serenity::all::{
     ButtonStyle, ChannelId, Colour, CreateButton, CreateEmbed, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateMessage, GuildId, Interaction, Message, MessageId,
+    ReactionType,
 };
 use serenity::async_trait;
 use serenity::builder::{CreateActionRow, CreateCommand, CreateCommandOption};
@@ -10,17 +11,20 @@ use serenity::model::application::{CommandDataOptionValue, CommandInteraction, C
 use serenity::model::gateway::Ready;
 use tracing::{debug, error, info};
 
+use std::sync::OnceLock;
+
 use crate::config::Config;
 use crate::state::SharedState;
 
 pub struct DiscordHandler {
     pub config: Config,
     pub state: SharedState,
+    pub bot_user_id: OnceLock<u64>,
 }
 
 impl DiscordHandler {
     pub fn new(config: Config, state: SharedState) -> Self {
-        Self { config, state }
+        Self { config, state, bot_user_id: OnceLock::new() }
     }
 }
 
@@ -28,6 +32,7 @@ impl DiscordHandler {
 impl EventHandler for DiscordHandler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("Discord bot ready as {}", ready.user.name);
+        let _ = self.bot_user_id.set(ready.user.id.get());
         let guild_id = GuildId::new(self.config.discord_guild_id);
         let commands = vec![
             CreateCommand::new("codex")
@@ -112,9 +117,46 @@ impl EventHandler for DiscordHandler {
         }
     }
 
-    async fn message(&self, _ctx: Context, msg: Message) {
+    async fn message(&self, ctx: Context, msg: Message) {
         if msg.author.bot { return; }
-        debug!("[discord] message in channel {}", msg.channel_id.get());
+        if msg.author.id.get() != self.config.controller_user_id { return; }
+
+        let bot_id = match self.bot_user_id.get() { Some(id) => *id, None => return };
+        let is_dm = msg.guild_id.is_none();
+        let is_mention = msg.mentions.iter().any(|u| u.id.get() == bot_id);
+        let is_reply_to_bot = msg.referenced_message.as_ref()
+            .map(|r| r.author.id.get() == bot_id)
+            .unwrap_or(false);
+
+        if !is_dm && !is_mention && !is_reply_to_bot { return; }
+
+        // Strip the mention from the content
+        let raw = msg.content.clone();
+        let text = raw
+            .replace(&format!("<@{bot_id}>"), "")
+            .replace(&format!("<@!{bot_id}>"), "")
+            .trim()
+            .to_string();
+        if text.is_empty() { return; }
+
+        let channel_id = msg.channel_id.get();
+        let mapped = self.state.reverse_map.contains_key(&channel_id);
+
+        // Show typing indicator while Codex works
+        let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+
+        let result = if mapped {
+            self.state.send_to_codex(&channel_id, &text).await
+        } else {
+            self.state.start_new_thread_in_channel(&channel_id, &text).await
+        };
+
+        let reply = match result {
+            Ok(Some(status)) => format!("✅ {status}"),
+            Ok(None) => "✅ Sent to Codex.".to_string(),
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = msg.reply(&ctx.http, reply).await;
     }
 }
 
