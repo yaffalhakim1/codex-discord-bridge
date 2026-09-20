@@ -48,11 +48,13 @@ async fn main() {
 
     let bridge_cfg = BridgeConfig::load();
     let _ = BRIDGE_CFG.set(bridge_cfg.clone());
+
     info!("Starting codex-discord-bridge v{}", env!("CARGO_PKG_VERSION"));
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<CodexEvent>();
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<DiscordOutbound>();
     let state = BridgeState::new(event_tx.clone());
+    *state.auto_thread.lock().unwrap() = bridge_cfg.auto_thread.clone();
     state.load_state();
 
     // Spawn codex app-server process

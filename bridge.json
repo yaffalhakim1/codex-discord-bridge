@@ -1,0 +1,18 @@
+{
+  "mirror": {
+    "agentMessages": true,
+    "userMessages": false,
+    "commands": false,
+    "fileChanges": false
+  },
+  "stream": {
+    "live": true
+  },
+  "approvals": {
+    "ttlMinutes": 30
+  },
+  "autoThread": {
+    "enabled": true,
+    "categoryId": 1551250166219280404
+  }
+}

@@ -55,6 +55,7 @@ pub struct BridgeState {
     /// channel_id → latest codex turn_id (for steering)
     pub last_turn: DashMap<u64, String>,
     pub default_model: std::sync::Mutex<Option<String>>,
+    pub auto_thread: std::sync::Mutex<crate::config_ext::AutoThreadConfig>,
     /// thread_id -> (accumulated_text, discord_message_id, last_flush)
     pub streams: DashMap<String, StreamState>,
     pub event_tx: mpsc::UnboundedSender<CodexEvent>,
@@ -72,6 +73,7 @@ impl BridgeState {
             write_queue: DashMap::new(),
             last_turn: DashMap::new(),
             default_model: std::sync::Mutex::new(None),
+            auto_thread: std::sync::Mutex::new(crate::config_ext::AutoThreadConfig::default()),
             streams: DashMap::new(),
             event_tx,
         })
@@ -281,6 +283,26 @@ impl BridgeState {
         Ok(None)
     }
 
+    /// Start a fresh Codex thread without mapping it to any channel.
+    /// Used when autoThread is on: the Discord thread is created by the
+    /// ThreadStarted handler and mapping happens there.
+    pub async fn start_thread_unmapped(&self, prompt: &str) -> Result<String, String> {
+        let codex = self.codex.read().await;
+        let codex = codex
+            .as_ref()
+            .ok_or_else(|| "Codex client not connected.".to_string())?;
+        let cwd = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        let model = self.default_model.lock().ok().and_then(|g| g.clone());
+        let thread_id = codex.start_thread(&cwd, "on-request", "read-only", model.as_deref()).await?;
+        drop(codex);
+        let codex = self.codex.read().await;
+        if let Some(codex) = codex.as_ref() {
+            self.start_turn_resilient(codex, &thread_id, prompt).await?;
+        }
+        Ok(thread_id)
+    }
     pub async fn start_new_thread_in_channel(
         &self,
         discord_channel_id: &u64,
