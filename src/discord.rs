@@ -69,7 +69,13 @@ impl EventHandler for DiscordHandler {
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::String, "cwd", "Working directory (optional)"),
                         ),
-                ),
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "model", "List available models or set one for new threads.")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "set", "Model ID to use for new threads"),
+                        ),
+                )
         ];
         match guild_id.set_commands(&ctx.http, commands).await {
             Ok(_) => info!("Slash commands registered."),
@@ -148,7 +154,7 @@ impl EventHandler for DiscordHandler {
         let result = if mapped {
             self.state.send_to_codex(&channel_id, &text).await
         } else {
-            self.state.start_new_thread_in_channel(&channel_id, &text).await
+            self.state.start_new_thread_in_channel(&channel_id, &text, None).await
         };
 
         if let Err(e) = result {
@@ -176,6 +182,7 @@ impl DiscordHandler {
             Some("attach") => self.cmd_attach(&ctx, &cmd).await,
             Some("detach") => self.cmd_detach(&ctx, &cmd).await,
             Some("new") => self.cmd_new(&ctx, &cmd).await,
+            Some("model") => self.cmd_model(&ctx, &cmd).await,
             _ => {
                 let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new().content("Unknown subcommand.").ephemeral(true),
@@ -275,7 +282,7 @@ impl DiscordHandler {
                 return;
             }
         };
-        match codex.start_thread(&cwd, "on-request", "read-only").await {
+        match codex.start_thread(&cwd, "on-request", "read-only", None).await {
             Ok(thread_id) => {
                 drop(codex);
                 self.state.map_thread(&thread_id, cmd.channel_id.get());
@@ -295,6 +302,66 @@ impl DiscordHandler {
                 let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new().content(content),
                 )).await;
+            }
+            Err(e) => {
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(format!("❌ {e}")).ephemeral(true),
+                )).await;
+            }
+        }
+    }
+    async fn cmd_model(&self, ctx: &Context, cmd: &CommandInteraction) {
+        // Optional "set" option
+        let set_to = cmd.data.options.first().and_then(|o| {
+            o.value.as_str().map(|s| s.to_string())
+        });
+
+        let codex = self.state.codex.read().await;
+        let codex = match codex.as_ref() {
+            Some(c) => c,
+            None => {
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content("Codex not connected.").ephemeral(true),
+                )).await;
+                return;
+            }
+        };
+
+        match codex.list_models().await {
+            Ok(models) => {
+                drop(codex);
+                if let Some(target) = set_to {
+                    // Verify model exists
+                    let found = models.iter().any(|m| m["id"].as_str() == Some(target.as_str()) || m["model"].as_str() == Some(target.as_str()));
+                    if found {
+                        self.state.default_model.lock().await.replace(target.clone());
+                        let content = format!("✅ New threads will use model `{target}`.");
+                        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+                        )).await;
+                    } else {
+                        let content = format!("❌ Model `{target}` not found. Use `/codex model` to list available models.");
+                        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+                        )).await;
+                    }
+                } else {
+                    let mut list = String::from("**Available models:**\n");
+                    for m in models.iter().take(20) {
+                        let id = m["id"].as_str().unwrap_or("?");
+                        let display = m["displayName"].as_str().unwrap_or("");
+                        let is_default = m["isDefault"].as_bool().unwrap_or(false);
+                        let marker = if is_default { " ⭐" } else { "" };
+                        list.push_str(&format!("• `{id}`{marker} — {display}\n"));
+                    }
+                    let current = self.state.default_model.lock().await.clone();
+                    if let Some(cur) = current {
+                        list.push_str(&format!("\n**Current default:** `{cur}`"));
+                    }
+                    let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new().content(list).ephemeral(true),
+                    )).await;
+                }
             }
             Err(e) => {
                 let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(

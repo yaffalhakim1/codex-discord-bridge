@@ -46,6 +46,7 @@ pub struct BridgeState {
     pub write_queue: DashMap<String, Vec<PendingWriteBack>>,
     /// channel_id → latest codex turn_id (for steering)
     pub last_turn: DashMap<u64, String>,
+    pub default_model: tokio::sync::Mutex<Option<String>>,
     pub event_tx: mpsc::UnboundedSender<CodexEvent>,
 }
 
@@ -60,6 +61,7 @@ impl BridgeState {
             approvals: DashMap::new(),
             write_queue: DashMap::new(),
             last_turn: DashMap::new(),
+            default_model: tokio::sync::Mutex::new(None),
             event_tx,
         })
     }
@@ -154,6 +156,7 @@ impl BridgeState {
         &self,
         discord_channel_id: &u64,
         prompt: &str,
+        model: Option<&str>,
     ) -> Result<Option<String>, String> {
         let codex = self.codex.read().await;
         let codex = codex
@@ -162,7 +165,8 @@ impl BridgeState {
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        let thread_id = codex.start_thread(&cwd, "on-request", "read-only").await?;
+        let model = model.map(String::from).or_else(|| self.default_model.blocking_lock().clone());
+        let thread_id = codex.start_thread(&cwd, "on-request", "read-only", model.as_deref()).await?;
         drop(codex);
         self.map_thread(&thread_id, *discord_channel_id);
         let codex = self.codex.read().await;

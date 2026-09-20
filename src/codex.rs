@@ -341,19 +341,32 @@ impl CodexClient {
             .collect())
     }
 
-    pub async fn start_thread(&self, cwd: &str, approval_policy: &str, sandbox: &str) -> Result<String, String> {
-        let result = self
-            .request(
-                "thread/start",
-                json!({ "cwd": cwd, "approvalPolicy": approval_policy, "sandbox": sandbox }),
-            )
-            .await?;
+    pub async fn start_thread(&self, cwd: &str, approval_policy: &str, sandbox: &str, model: Option<&str>) -> Result<String, String> {
+        let mut params = json!({ "cwd": cwd, "approvalPolicy": approval_policy, "sandbox": sandbox });
+        if let Some(m) = model {
+            params["model"] = json!(m);
+        }
+        let result = self.request("thread/start", params).await?;
         result["thread"]["id"]
             .as_str()
             .map(String::from)
             .ok_or_else(|| "No thread id in response".into())
     }
 
+    pub async fn list_models(&self) -> Result<Vec<Value>, String> {
+        let result = self.request("model/list", json!({})).await?;
+        let data = result["data"].as_array().cloned().unwrap_or_default();
+        Ok(data)
+    }
+
+    pub async fn start_turn_with_model(&self, thread_id: &str, text: &str, model: Option<&str>) -> Result<Value, String> {
+        let params = if let Some(m) = model {
+            json!({ "threadId": thread_id, "input": [{ "type": "text", "text": text }], "model": m })
+        } else {
+            json!({ "threadId": thread_id, "input": [{ "type": "text", "text": text }] })
+        };
+        self.request("turn/start", params).await
+    }
     pub async fn start_turn(&self, thread_id: &str, text: &str) -> Result<Value, String> {
         self.request(
             "turn/start",
