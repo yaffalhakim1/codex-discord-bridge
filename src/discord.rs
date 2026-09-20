@@ -55,6 +55,15 @@ impl EventHandler for DiscordHandler {
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::String, "thread_id", "Codex thread id").required(true),
                         ),
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "new", "Start a new Codex thread with an initial prompt.")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "prompt", "Initial prompt for Codex").required(true),
+                        )
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "cwd", "Working directory (optional)"),
+                        ),
                 ),
         ];
         match guild_id.set_commands(&ctx.http, commands).await {
@@ -127,6 +136,7 @@ impl DiscordHandler {
             Some("retract") => self.cmd_retract(&ctx, &cmd).await,
             Some("attach") => self.cmd_attach(&ctx, &cmd).await,
             Some("detach") => self.cmd_detach(&ctx, &cmd).await,
+            Some("new") => self.cmd_new(&ctx, &cmd).await,
             _ => {
                 let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new().content("Unknown subcommand.").ephemeral(true),
@@ -203,6 +213,57 @@ impl DiscordHandler {
         )).await;
     }
 
+    async fn cmd_new(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let prompt = Self::extract_string_option(cmd).unwrap_or_default();
+        if prompt.is_empty() {
+            let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new().content("Prompt cannot be empty.").ephemeral(true),
+            )).await;
+            return;
+        }
+        // Second option is optional cwd
+        let cwd = cmd.data.options.get(1).and_then(|o| {
+            if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
+        }).unwrap_or_else(|| std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default());
+
+        let codex = self.state.codex.read().await;
+        let codex = match codex.as_ref() {
+            Some(c) => c,
+            None => {
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content("Codex not connected.").ephemeral(true),
+                )).await;
+                return;
+            }
+        };
+        match codex.start_thread(&cwd, "on-request", "read-only").await {
+            Ok(thread_id) => {
+                drop(codex);
+                self.state.map_thread(&thread_id, cmd.channel_id.get());
+                // Start the first turn in a background task
+                let state = self.state.clone();
+                let tid = thread_id.clone();
+                let p = prompt.clone();
+                let ch = cmd.channel_id.get();
+                tokio::spawn(async move {
+                    let codex = state.codex.read().await;
+                    if let Some(codex) = codex.as_ref() {
+                        let _ = codex.start_turn(&tid, &p).await;
+                    }
+                    state.last_turn.insert(ch, tid.clone());
+                });
+                let content = format!("✅ Started Codex thread `{}` with prompt: {prompt}", &thread_id[..12.min(thread_id.len())]);
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(content),
+                )).await;
+            }
+            Err(e) => {
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(format!("❌ {e}")).ephemeral(true),
+                )).await;
+            }
+        }
+    }
     async fn cmd_detach(&self, ctx: &Context, cmd: &CommandInteraction) {
         let thread_id = Self::extract_string_option(cmd).unwrap_or_default();
         let result = self.state.detach_thread(&thread_id).await;

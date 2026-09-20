@@ -27,7 +27,8 @@ Required bot permissions: `View Channels`, `Send Messages`, `Send Messages in Th
 - `/codex attach <thread_id>` — map a Codex thread to the current Discord channel
 - `/codex detach <thread_id>` — remove the mapping
 - `/codex send <text>` — send a message to the mapped Codex thread (queues if busy)
-- `/codex status` — list mapped threads
+- /codex new <prompt> — start a new Codex thread (the bridge owns it for full control)
+- /codex status — list mapped threads
 - `/codex retract` — retract the latest queued message
 
 When Codex needs approval for a command or file edit, a card appears in Discord with Approve/Reject buttons.
