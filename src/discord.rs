@@ -230,7 +230,11 @@ impl DiscordHandler {
             return;
         }
         let channel_id = cmd.channel_id.get();
-        let result = self.state.send_to_codex(&channel_id, &text).await;
+        let mode = cmd.data.options.get(1).and_then(|o| o.value.as_str().map(String::from));
+        let result = match mode.as_deref() {
+            Some("steer") => self.state.steer_to_codex(&channel_id, &text).await,
+            _ => self.state.send_to_codex(&channel_id, &text).await,
+        };
         let content = match result {
             Ok(Some(m)) => format!("✅ {m}"),
             Ok(None) => "⚠️ No thread mapped to this channel.".to_string(),

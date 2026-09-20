@@ -379,6 +379,13 @@ impl CodexClient {
         self.request("thread/resume", json!({ "threadId": thread_id })).await
     }
 
+    pub async fn steer_turn(&self, thread_id: &str, expected_turn_id: &str, text: &str) -> Result<Value, String> {
+        self.request(
+            "turn/steer",
+            json!({ "threadId": thread_id, "expectedTurnId": expected_turn_id, "input": [{ "type": "text", "text": text }] }),
+        )
+        .await
+    }
     pub async fn interrupt_turn(&self, thread_id: &str, turn_id: &str) -> Result<(), String> {
         self.request(
             "turn/interrupt",

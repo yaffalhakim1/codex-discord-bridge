@@ -189,6 +189,25 @@ impl BridgeState {
         }
     }
 
+    pub async fn steer_to_codex(&self, discord_channel_id: &u64, text: &str) -> Result<Option<String>, String> {
+        let codex_id = self
+            .reverse_map
+            .get(discord_channel_id)
+            .map(|v| v.value().clone())
+            .ok_or_else(|| "No thread mapped to this channel.".to_string())?;
+        let active_turn = self.last_turn.get(discord_channel_id).map(|v| v.value().clone());
+        let codex = self.codex.read().await;
+        let codex = codex
+            .as_ref()
+            .ok_or_else(|| "Codex client not connected.".to_string())?;
+        if let Some(turn_id) = active_turn {
+            codex.steer_turn(&codex_id, &turn_id, text).await?;
+            Ok(Some("steered".to_string()))
+        } else {
+            codex.start_turn(&codex_id, text).await?;
+            Ok(Some("sent".to_string()))
+        }
+    }
     pub async fn retract_pending(&self, discord_channel_id: &u64) -> Result<Option<String>, String> {
         let codex_id = self
             .reverse_map
