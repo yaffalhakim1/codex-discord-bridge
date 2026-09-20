@@ -1,4 +1,5 @@
 mod codex;
+mod config_ext;
 mod config;
 mod discord;
 mod state;
@@ -12,10 +13,12 @@ use tracing::{debug, error, info, warn};
 
 use codex::{CodexClient, CodexEvent};
 use config::Config;
+use config_ext::BridgeConfig;
 use state::{BridgeState, StreamState};
 
 /// A message to post to a Discord channel from the Codex event loop.
-#[derive(Debug)]
+static BRIDGE_CFG: std::sync::OnceLock<BridgeConfig> = std::sync::OnceLock::new();
+
 pub enum DiscordOutbound {
     Plain { channel_id: u64, content: String },
     EditStream { channel_id: u64, message_id: u64, content: String },
@@ -41,6 +44,8 @@ async fn main() {
         }
     };
 
+    let bridge_cfg = BridgeConfig::load();
+    let _ = BRIDGE_CFG.set(bridge_cfg.clone());
     info!("Starting codex-discord-bridge v{}", env!("CARGO_PKG_VERSION"));
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<CodexEvent>();
@@ -239,6 +244,15 @@ fn mirror_item(
     item: &serde_json::Value,
     outbound_tx: &mpsc::UnboundedSender<DiscordOutbound>,
 ) {
+    let cfg = BRIDGE_CFG.get();
+    let allowed = match item_type {
+        "agentMessage" => cfg.map(|c| c.mirror.agent_messages).unwrap_or(true),
+        "userMessage" => cfg.map(|c| c.mirror.user_messages).unwrap_or(false),
+        "commandExecution" => cfg.map(|c| c.mirror.commands).unwrap_or(false),
+        "fileChange" => cfg.map(|c| c.mirror.file_changes).unwrap_or(false),
+        _ => false,
+    };
+    if !allowed { return; }
     let content = match item_type {
         "agentMessage" => {
             let text = item["text"].as_str().unwrap_or("");
@@ -257,6 +271,7 @@ fn handle_stream_delta(
     state: &Arc<BridgeState>,
     outbound_tx: &mpsc::UnboundedSender<DiscordOutbound>,
 ) {
+    if BRIDGE_CFG.get().map(|c| !c.stream.live).unwrap_or(false) { return; }
     const DEBOUNCE_MS: u128 = 1500;
     const MAX_LEN: usize = 1900;
     let channel_id = match state.thread_map.get(thread_id) {

@@ -1,0 +1,14 @@
+{
+  "mirror": {
+    "agentMessages": true,
+    "userMessages": false,
+    "commands": false,
+    "fileChanges": false
+  },
+  "stream": {
+    "live": true
+  },
+  "approvals": {
+    "ttlMinutes": 30
+  }
+}
