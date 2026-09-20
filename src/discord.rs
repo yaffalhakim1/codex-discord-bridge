@@ -1,0 +1,240 @@
+use serenity::all::{
+    ButtonStyle, ChannelId, Colour, CreateButton, CreateEmbed, CreateInteractionResponse,
+    CreateInteractionResponseMessage, CreateMessage, GuildId, Interaction, Message, MessageId,
+};
+use serenity::async_trait;
+use serenity::builder::{CreateActionRow, CreateCommand, CreateCommandOption};
+use serenity::client::{Context, EventHandler};
+use serenity::http::Http;
+use serenity::model::application::{CommandDataOptionValue, CommandInteraction, CommandOptionType, InteractionResponseFlags};
+use serenity::model::gateway::Ready;
+use tracing::{debug, error, info};
+
+use crate::config::Config;
+use crate::state::SharedState;
+
+pub struct DiscordHandler {
+    pub config: Config,
+    pub state: SharedState,
+}
+
+impl DiscordHandler {
+    pub fn new(config: Config, state: SharedState) -> Self {
+        Self { config, state }
+    }
+}
+
+#[async_trait]
+impl EventHandler for DiscordHandler {
+    async fn ready(&self, ctx: Context, ready: Ready) {
+        info!("Discord bot ready as {}", ready.user.name);
+        let guild_id = GuildId::new(self.config.discord_guild_id);
+        let commands = vec![
+            CreateCommand::new("codex")
+                .description("Monitor and control Codex from Discord.")
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "status", "List mapped Codex conversations."),
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "send", "Send a message to the mapped Codex thread.")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "text", "Message for Codex").required(true),
+                        ),
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "retract", "Retract the latest pending message."),
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "attach", "Attach to an existing Codex thread.")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "thread_id", "Codex thread id").required(true),
+                        ),
+                )
+                .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "detach", "Detach from a mapped Codex thread.")
+                        .add_sub_option(
+                            CreateCommandOption::new(CommandOptionType::String, "thread_id", "Codex thread id").required(true),
+                        ),
+                ),
+        ];
+        match guild_id.set_commands(&ctx.http, commands).await {
+            Ok(_) => info!("Slash commands registered."),
+            Err(e) => error!("Failed to register slash commands: {e}"),
+        }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        match interaction {
+            Interaction::Command(cmd) => self.handle_command(ctx, cmd).await,
+            Interaction::Component(comp) => {
+                let user_id = comp.user.id.get();
+                if user_id != self.config.controller_user_id {
+                    let _ = comp
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Only the controller can approve or reject.")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+                let custom_id = comp.data.custom_id.clone();
+                let parts: Vec<&str> = custom_id.split(':').collect();
+                if parts.len() < 2 { return; }
+                let action = parts[0];
+                let token = parts[1];
+                match action {
+                    "approve" | "decline" | "cancel" => {
+                        if let Err(e) = self.state.handle_approval_decision(token, action).await {
+                            let _ = comp.create_response(&ctx.http, CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new().content(format!("Error: {e}")).ephemeral(true),
+                            )).await;
+                        } else {
+                            let _ = comp.create_response(&ctx.http, CreateInteractionResponse::Acknowledge).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn message(&self, _ctx: Context, msg: Message) {
+        if msg.author.bot { return; }
+        debug!("[discord] message in channel {}", msg.channel_id.get());
+    }
+}
+
+impl DiscordHandler {
+    async fn handle_command(&self, ctx: Context, cmd: CommandInteraction) {
+        if cmd.user.id.get() != self.config.controller_user_id {
+            let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Only the controller can use this bot.")
+                    .ephemeral(true)
+                    .flags(InteractionResponseFlags::EPHEMERAL),
+            )).await;
+            return;
+        }
+        let sub = cmd.data.options.first().map(|o| o.name.as_str());
+        match sub {
+            Some("status") => self.cmd_status(&ctx, &cmd).await,
+            Some("send") => self.cmd_send(&ctx, &cmd).await,
+            Some("retract") => self.cmd_retract(&ctx, &cmd).await,
+            Some("attach") => self.cmd_attach(&ctx, &cmd).await,
+            Some("detach") => self.cmd_detach(&ctx, &cmd).await,
+            _ => {
+                let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content("Unknown subcommand.").ephemeral(true),
+                )).await;
+            }
+        }
+    }
+
+    fn extract_string_option(cmd: &CommandInteraction) -> Option<String> {
+        cmd.data.options.first().and_then(|o| {
+            if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
+        })
+    }
+
+    async fn cmd_status(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let threads = self.state.list_mapped_threads().await;
+        let content: String = if threads.is_empty() {
+            "No mapped Codex threads yet.".to_string()
+        } else {
+            let mut s = String::from("**Mapped Codex Threads:**\n");
+            for t in threads {
+                s.push_str(&format!("• `{}` → <#{}>\n", t.codex_thread_id, t.discord_channel_id));
+            }
+            s
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
+    }
+
+    async fn cmd_send(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let text = Self::extract_string_option(cmd).unwrap_or_default();
+        if text.is_empty() {
+            let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new().content("Message cannot be empty.").ephemeral(true),
+            )).await;
+            return;
+        }
+        let channel_id = cmd.channel_id.get();
+        let result = self.state.send_to_codex(&channel_id, &text).await;
+        let content = match result {
+            Ok(Some(m)) => format!("✅ {m}"),
+            Ok(None) => "⚠️ No thread mapped to this channel.".to_string(),
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
+    }
+
+    async fn cmd_retract(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let channel_id = cmd.channel_id.get();
+        let result = self.state.retract_pending(&channel_id).await;
+        let content = match result {
+            Ok(Some(t)) => format!("↩️ Retracted: `{t}`"),
+            Ok(None) => "ℹ️ No pending messages.".to_string(),
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
+    }
+
+    async fn cmd_attach(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let thread_id = Self::extract_string_option(cmd).unwrap_or_default();
+        let channel_id = cmd.channel_id.get();
+        let result = self.state.attach_thread(&thread_id, channel_id).await;
+        let content = match result {
+            Ok(()) => format!("✅ Attached `{thread_id}`."),
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
+    }
+
+    async fn cmd_detach(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let thread_id = Self::extract_string_option(cmd).unwrap_or_default();
+        let result = self.state.detach_thread(&thread_id).await;
+        let content = match result {
+            Ok(()) => format!("✅ Detached `{thread_id}`."),
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
+    }
+}
+
+pub async fn post_approval_card(
+    http: &Http,
+    channel_id: u64,
+    title: &str,
+    detail: &str,
+    token: &str,
+) -> Result<MessageId, serenity::Error> {
+    let buttons = vec![
+        CreateButton::new(format!("approve:{token}")).label("Approve").style(ButtonStyle::Success),
+        CreateButton::new(format!("decline:{token}")).label("Reject").style(ButtonStyle::Danger),
+    ];
+    let embed = CreateEmbed::new().title(title).description(detail).colour(Colour::ORANGE);
+    let msg = ChannelId::new(channel_id)
+        .send_message(
+            http,
+            CreateMessage::new().embed(embed).components(vec![
+                CreateActionRow::Buttons(buttons),
+            ]),
+        )
+        .await?;
+    Ok(msg.id)
+}
