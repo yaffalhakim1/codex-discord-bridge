@@ -170,7 +170,7 @@ impl BridgeState {
             codex.start_turn(&thread_id, prompt).await?;
         }
         self.last_turn.insert(*discord_channel_id, thread_id.clone());
-        Ok(Some(format!("New Codex thread `{}` started.", &thread_id[..12.min(thread_id.len())])))
+        Ok(None)
     }
     pub async fn handle_approval_decision(&self, token: &str, decision: &str) -> Result<(), String> {
         let approval = self

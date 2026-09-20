@@ -151,12 +151,9 @@ impl EventHandler for DiscordHandler {
             self.state.start_new_thread_in_channel(&channel_id, &text).await
         };
 
-        let reply = match result {
-            Ok(Some(status)) => format!("✅ {status}"),
-            Ok(None) => "✅ Sent to Codex.".to_string(),
-            Err(e) => format!("❌ {e}"),
-        };
-        let _ = msg.reply(&ctx.http, reply).await;
+        if let Err(e) = result {
+            let _ = msg.reply(&ctx.http, format!("❌ {e}")).await;
+        }
     }
 }
 
