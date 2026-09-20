@@ -74,6 +74,9 @@ impl EventHandler for DiscordHandler {
                     CreateCommandOption::new(CommandOptionType::SubCommand, "stop", "Interrupt the running Codex turn in this channel."),
                 )
                 .add_option(
+                    CreateCommandOption::new(CommandOptionType::SubCommand, "threads", "List recent Codex threads."),
+                )
+                .add_option(
                     CreateCommandOption::new(CommandOptionType::SubCommand, "model", "List available models or set one for new threads.")
                         .add_sub_option(
                             CreateCommandOption::new(CommandOptionType::String, "set", "Model ID to use for new threads"),
@@ -186,6 +189,7 @@ impl DiscordHandler {
             Some("detach") => self.cmd_detach(&ctx, &cmd).await,
             Some("new") => self.cmd_new(&ctx, &cmd).await,
             Some("stop") => self.cmd_stop(&ctx, &cmd).await,
+            Some("threads") => self.cmd_threads(&ctx, &cmd).await,
             Some("model") => self.cmd_model(&ctx, &cmd).await,
             _ => {
                 let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
@@ -313,6 +317,37 @@ impl DiscordHandler {
                 )).await;
             }
         }
+    }
+    async fn cmd_threads(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let codex = self.state.codex.read().await;
+        let result = match codex.as_ref() {
+            Some(c) => c.list_threads(10).await,
+            None => Err("Codex not connected.".into()),
+        };
+        drop(codex);
+        let content = match result {
+            Ok(threads) => {
+                if threads.is_empty() {
+                    "No Codex threads found.".to_string()
+                } else {
+                    let mapped = self.state.thread_map.clone();
+                    let mut s = String::from("**Recent Codex threads:**\n");
+                    for t in threads {
+                        let is_mapped = mapped.iter().any(|m| m.key() == &t.id);
+                        let marker = if is_mapped { " ✅" } else { "" };
+                        let name = t.name.as_deref().unwrap_or(t.preview.as_deref().unwrap_or("(untitled)"));
+                        let short = &t.id[..12.min(t.id.len())];
+                        s.push_str(&format!("• `{short}`{marker} — {name}\n"));
+                    }
+                    s.push_str("\nUse `/codex attach <full_thread_id>` to map one to a channel.");
+                    s
+                }
+            }
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
     }
     async fn cmd_stop(&self, ctx: &Context, cmd: &CommandInteraction) {
         let channel_id = cmd.channel_id.get();
