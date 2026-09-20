@@ -199,28 +199,6 @@ impl DiscordHandler {
         }
     }
 
-    /// For a subcommand interaction, options nest inside the SubCommand variant.
-    fn get_sub_options(cmd: &CommandInteraction) -> &[CommandDataOption] {
-        match cmd.data.options.first() {
-            Some(o) => match &o.value {
-                CommandDataOptionValue::SubCommand(opts) => opts.as_slice(),
-                _ => &[],
-            },
-            None => &[],
-        }
-    }
-
-    fn extract_string_option(cmd: &CommandInteraction) -> Option<String> {
-        Self::get_sub_options(cmd).first().and_then(|o| {
-            if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
-        })
-    }
-
-    fn extract_string_option_at(cmd: &CommandInteraction, index: usize) -> Option<String> {
-        Self::get_sub_options(cmd).get(index).and_then(|o| {
-            if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
-        })
-    }
     async fn cmd_status(&self, ctx: &Context, cmd: &CommandInteraction) {
         let threads = self.state.list_mapped_threads().await;
         let content: String = if threads.is_empty() {
@@ -238,7 +216,7 @@ impl DiscordHandler {
     }
 
     async fn cmd_send(&self, ctx: &Context, cmd: &CommandInteraction) {
-        let text = Self::extract_string_option(cmd).unwrap_or_default();
+        let text = crate::options::string_at(&cmd.data.options, 0).unwrap_or_default();
         if text.is_empty() {
             let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().content("Message cannot be empty.").ephemeral(true),
@@ -246,7 +224,7 @@ impl DiscordHandler {
             return;
         }
         let channel_id = cmd.channel_id.get();
-        let mode = cmd.data.options.get(1).and_then(|o| o.value.as_str().map(String::from));
+        let mode = crate::options::string_at(&cmd.data.options, 1);
         let result = match mode.as_deref() {
             Some("steer") => self.state.steer_to_codex(&channel_id, &text).await,
             _ => self.state.send_to_codex(&channel_id, &text).await,
@@ -275,7 +253,7 @@ impl DiscordHandler {
     }
 
     async fn cmd_attach(&self, ctx: &Context, cmd: &CommandInteraction) {
-        let thread_id = Self::extract_string_option(cmd).unwrap_or_default();
+        let thread_id = crate::options::string_at(&cmd.data.options, 0).unwrap_or_default();
         let channel_id = cmd.channel_id.get();
         let result = self.state.attach_thread(&thread_id, channel_id).await;
         let content = match result {
@@ -288,7 +266,7 @@ impl DiscordHandler {
     }
 
     async fn cmd_new(&self, ctx: &Context, cmd: &CommandInteraction) {
-        let prompt = Self::extract_string_option(cmd).unwrap_or_default();
+        let prompt = crate::options::string_at(&cmd.data.options, 0).unwrap_or_default();
         if prompt.is_empty() {
             let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new().content("Prompt cannot be empty.").ephemeral(true),
@@ -296,9 +274,8 @@ impl DiscordHandler {
             return;
         }
         // Second option is optional cwd
-        let cwd = cmd.data.options.get(1).and_then(|o| {
-            if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
-        }).unwrap_or_else(|| std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default());
+        let cwd = crate::options::string_at(&cmd.data.options, 1)
+            .unwrap_or_else(|| std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default());
 
         let codex = self.state.codex.read().await;
         let codex = match codex.as_ref() {
@@ -314,7 +291,6 @@ impl DiscordHandler {
             Ok(thread_id) => {
                 drop(codex);
                 self.state.map_thread(&thread_id, cmd.channel_id.get());
-                // Start the first turn in a background task
                 let state = self.state.clone();
                 let tid = thread_id.clone();
                 let p = prompt.clone();
@@ -338,37 +314,7 @@ impl DiscordHandler {
             }
         }
     }
-    async fn cmd_threads(&self, ctx: &Context, cmd: &CommandInteraction) {
-        let codex = self.state.codex.read().await;
-        let result = match codex.as_ref() {
-            Some(c) => c.list_threads(10).await,
-            None => Err("Codex not connected.".into()),
-        };
-        drop(codex);
-        let content = match result {
-            Ok(threads) => {
-                if threads.is_empty() {
-                    "No Codex threads found.".to_string()
-                } else {
-                    let mapped = self.state.thread_map.clone();
-                    let mut s = String::from("**Recent Codex threads:**\n");
-                    for t in threads {
-                        let is_mapped = mapped.iter().any(|m| m.key() == &t.id);
-                        let marker = if is_mapped { " ✅" } else { "" };
-                        let name = t.name.as_deref().unwrap_or(t.preview.as_deref().unwrap_or("(untitled)"));
-                        let short = &t.id[..12.min(t.id.len())];
-                        s.push_str(&format!("• `{short}`{marker} — {name}\n"));
-                    }
-                    s.push_str("\nUse `/codex attach <full_thread_id>` to map one to a channel.");
-                    s
-                }
-            }
-            Err(e) => format!("❌ {e}"),
-        };
-        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
-        )).await;
-    }
+
     async fn cmd_stop(&self, ctx: &Context, cmd: &CommandInteraction) {
         let channel_id = cmd.channel_id.get();
         let thread_id = match self.state.reverse_map.get(&channel_id) {
@@ -402,11 +348,41 @@ impl DiscordHandler {
             CreateInteractionResponseMessage::new().content(content).ephemeral(true),
         )).await;
     }
+
+    async fn cmd_threads(&self, ctx: &Context, cmd: &CommandInteraction) {
+        let codex = self.state.codex.read().await;
+        let result = match codex.as_ref() {
+            Some(c) => c.list_threads(10).await,
+            None => Err("Codex not connected.".into()),
+        };
+        drop(codex);
+        let content = match result {
+            Ok(threads) => {
+                if threads.is_empty() {
+                    "No Codex threads found.".to_string()
+                } else {
+                    let mapped = self.state.thread_map.clone();
+                    let mut s = String::from("**Recent Codex threads:**\n");
+                    for t in threads {
+                        let is_mapped = mapped.iter().any(|m| m.key() == &t.id);
+                        let marker = if is_mapped { " ✅" } else { "" };
+                        let name = t.name.as_deref().unwrap_or(t.preview.as_deref().unwrap_or("(untitled)"));
+                        let short = &t.id[..12.min(t.id.len())];
+                        s.push_str(&format!("• `{short}`{marker} — {name}\n"));
+                    }
+                    s.push_str("\nUse `/codex attach <full_thread_id>` to map one to a channel.");
+                    s
+                }
+            }
+            Err(e) => format!("❌ {e}"),
+        };
+        let _ = cmd.create_response(&ctx.http, CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new().content(content).ephemeral(true),
+        )).await;
+    }
+
     async fn cmd_model(&self, ctx: &Context, cmd: &CommandInteraction) {
-        // Optional "set" option
-        let set_to = cmd.data.options.first().and_then(|o| {
-            o.value.as_str().map(|s| s.to_string())
-        });
+        let set_to = crate::options::string_at(&cmd.data.options, 0);
 
         let codex = self.state.codex.read().await;
         let codex = match codex.as_ref() {
@@ -423,7 +399,6 @@ impl DiscordHandler {
             Ok(models) => {
                 drop(codex);
                 if let Some(target) = set_to {
-                    // Verify model exists
                     let found = models.iter().any(|m| m["id"].as_str() == Some(target.as_str()) || m["model"].as_str() == Some(target.as_str()));
                     if found {
                         if let Ok(mut g) = self.state.default_model.lock() { *g = Some(target.clone()); }
@@ -462,8 +437,9 @@ impl DiscordHandler {
             }
         }
     }
+
     async fn cmd_detach(&self, ctx: &Context, cmd: &CommandInteraction) {
-        let thread_id = Self::extract_string_option(cmd).unwrap_or_default();
+        let thread_id = crate::options::string_at(&cmd.data.options, 0).unwrap_or_default();
         let result = self.state.detach_thread(&thread_id).await;
         let content = match result {
             Ok(()) => format!("✅ Detached `{thread_id}`."),
@@ -474,7 +450,6 @@ impl DiscordHandler {
         )).await;
     }
 }
-
 pub async fn post_approval_card(
     http: &Http,
     channel_id: u64,

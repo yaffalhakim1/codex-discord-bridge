@@ -1,4 +1,5 @@
 mod codex;
+mod options;
 mod config_ext;
 mod config;
 mod discord;
