@@ -7,7 +7,7 @@ use serenity::async_trait;
 use serenity::builder::{CreateActionRow, CreateCommand, CreateCommandOption};
 use serenity::client::{Context, EventHandler};
 use serenity::http::Http;
-use serenity::model::application::{CommandDataOptionValue, CommandInteraction, CommandOptionType, InteractionResponseFlags};
+use serenity::model::application::{CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType, InteractionResponseFlags};
 use serenity::model::gateway::Ready;
 use tracing::{debug, error, info};
 
@@ -199,12 +199,28 @@ impl DiscordHandler {
         }
     }
 
+    /// For a subcommand interaction, options nest inside the SubCommand variant.
+    fn get_sub_options(cmd: &CommandInteraction) -> &[CommandDataOption] {
+        match cmd.data.options.first() {
+            Some(o) => match &o.value {
+                CommandDataOptionValue::SubCommand(opts) => opts.as_slice(),
+                _ => &[],
+            },
+            None => &[],
+        }
+    }
+
     fn extract_string_option(cmd: &CommandInteraction) -> Option<String> {
-        cmd.data.options.first().and_then(|o| {
+        Self::get_sub_options(cmd).first().and_then(|o| {
             if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
         })
     }
 
+    fn extract_string_option_at(cmd: &CommandInteraction, index: usize) -> Option<String> {
+        Self::get_sub_options(cmd).get(index).and_then(|o| {
+            if let CommandDataOptionValue::String(s) = &o.value { Some(s.clone()) } else { None }
+        })
+    }
     async fn cmd_status(&self, ctx: &Context, cmd: &CommandInteraction) {
         let threads = self.state.list_mapped_threads().await;
         let content: String = if threads.is_empty() {
