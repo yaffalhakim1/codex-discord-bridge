@@ -173,6 +173,24 @@ impl BridgeState {
         Ok(())
     }
 
+    /// Send a turn to a mapped thread. If Codex reports the thread is unknown
+    /// (e.g. bridge restarted with a fresh app-server), resume it from disk and retry once.
+    async fn start_turn_resilient(
+        &self,
+        codex: &CodexClient,
+        thread_id: &str,
+        text: &str,
+    ) -> Result<serde_json::Value, String> {
+        match codex.start_turn(thread_id, text).await {
+            Ok(v) => Ok(v),
+            Err(e) if e.contains("not found") || e.contains("no rollout") => {
+                debug!("[state] thread {thread_id} not loaded — resuming from disk");
+                codex.resume_thread(thread_id).await?;
+                codex.start_turn(thread_id, text).await
+            }
+            Err(e) => Err(e),
+        }
+    }
     pub async fn send_to_codex(&self, discord_channel_id: &u64, text: &str) -> Result<Option<String>, String> {
         let codex_id = self
             .reverse_map
