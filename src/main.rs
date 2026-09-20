@@ -162,6 +162,7 @@ async fn main() {
                     }
                 }
                 DiscordOutbound::CreateThread { category_id, name, codex_thread_id } => {
+                    info!("[autothread] creating discord thread '{}' under {}", name, category_id);
                     // Create a public thread; Discord needs a parent message or channel.
                     // We create a new forum-style thread via the guild API: start from a channel.
                     // Simplest supported path: create thread with a starter message in the category's channel.
@@ -220,7 +221,7 @@ async fn handle_codex_event(
 ) {
     match event {
         CodexEvent::ThreadStarted(thread) => {
-            debug!("[bridge] thread started: {}", thread.id);
+            info!("[bridge] thread started: {}", thread.id);
             handle_auto_thread(thread, state, outbound_tx);
         }
         CodexEvent::ThreadStatusChanged { thread_id, status } => {
@@ -306,6 +307,7 @@ fn handle_auto_thread(
         Some(c) => (c.auto_thread.enabled, c.auto_thread.category_id),
         None => (false, None),
     };
+    info!("[autothread] gate: enabled={} category={:?}", enabled, category_id);
     if !enabled { return; }
     if state.thread_map.contains_key(&thread.id) { return; }
     let category = match category_id {
