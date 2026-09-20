@@ -53,6 +53,7 @@ pub enum CodexEvent {
     ApprovalRequest(ApprovalRequest),
     ApprovalResolved { request_id: Value, decision: Value },
     Other { method: String, params: Value },
+    Disconnected,
 }
 
 pub struct CodexClient {
@@ -235,6 +236,7 @@ impl CodexClient {
                 }
             }
             info!("Codex read loop ended.");
+            let _ = event_tx_read.send(CodexEvent::Disconnected);
         });
 
         // Initialize handshake

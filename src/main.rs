@@ -55,6 +55,9 @@ async fn main() {
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<DiscordOutbound>();
     let state = BridgeState::new(event_tx.clone());
     *state.auto_thread.lock().unwrap() = bridge_cfg.auto_thread.clone();
+    let codex_child: tokio::sync::Mutex<Option<tokio::process::Child>> = tokio::sync::Mutex::new(None);
+    let codex_child: tokio::sync::Mutex<Option<tokio::process::Child>> = tokio::sync::Mutex::new(None);
+    let codex_child: tokio::sync::Mutex<Option<tokio::process::Child>> = tokio::sync::Mutex::new(None);
     state.load_state();
 
     // Spawn codex app-server process
@@ -67,7 +70,7 @@ async fn main() {
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn();
-    let mut child = match child {
+    let child = match child {
         Ok(c) => {
             info!("Spawned codex app-server: {codex_cmd} app-server --listen {listen_url}");
             c
@@ -77,6 +80,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    *codex_child.lock().await = Some(child);
 
     // Wait for port ready
     let mut port_ready = false;
@@ -94,7 +98,7 @@ async fn main() {
     info!("Codex app-server is listening on {listen_url}");
 
     // Connect to codex WebSocket
-    let codex_client = match CodexClient::connect(&listen_url, event_tx).await {
+    let codex_client = match CodexClient::connect(&listen_url, event_tx.clone()).await {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to connect to Codex: {e}");
@@ -205,19 +209,20 @@ async fn main() {
 
     // Codex event loop
     while let Some(event) = event_rx.recv().await {
-        handle_codex_event(&event, &state, &outbound_tx).await;
+        handle_codex_event(&event, &state, &outbound_tx, &config, &codex_child).await;
     }
 
     // Cleanup
     poster.abort();
     discord_handle.abort();
-    let _ = child.kill().await;
 }
 
 async fn handle_codex_event(
     event: &CodexEvent,
     state: &Arc<BridgeState>,
     outbound_tx: &mpsc::UnboundedSender<DiscordOutbound>,
+    config: &Config,
+    codex_child: &tokio::sync::Mutex<Option<tokio::process::Child>>,
 ) {
     match event {
         CodexEvent::ThreadStarted(thread) => {
@@ -264,12 +269,57 @@ async fn handle_codex_event(
             handle_approval(req, state, outbound_tx);
         }
         CodexEvent::ApprovalResolved { .. } => {}
+        CodexEvent::Disconnected => {
+            error!("[bridge] Codex connection lost - restarting app-server");
+            if let Some(mut child) = codex_child.lock().await.take() {
+                let _ = child.kill().await;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match spawn_codex_and_connect(&config, &state, state.event_tx.clone()).await {
+                Ok(new_child) => {
+                    *codex_child.lock().await = Some(new_child);
+                    info!("[bridge] Codex reconnected.");
+                }
+                Err(e) => error!("[bridge] reconnect failed: {e}"),
+            }
+        }
+
         CodexEvent::Other { method, .. } => {
             debug!("[bridge] codex event: {method}");
         }
     }
 }
 
+/// Spawn the codex app-server child, wait for the port, connect a client,
+async fn spawn_codex_and_connect(
+    config: &Config,
+    state: &Arc<BridgeState>,
+    event_tx: mpsc::UnboundedSender<CodexEvent>,
+) -> Result<tokio::process::Child, String> {
+    let listen_port = config.codex_port;
+    let listen_url = format!("ws://127.0.0.1:{listen_port}");
+    let child = Command::new(&config.codex_command)
+        .args(["app-server", "--listen", &listen_url])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    let mut ready = false;
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if tokio::net::TcpStream::connect(("127.0.0.1", listen_port)).await.is_ok() {
+            ready = true;
+            break;
+        }
+    }
+    if !ready {
+        return Err(format!("app-server not ready on {listen_url} in 15s"));
+    }
+    let client = CodexClient::connect(&listen_url, event_tx).await?;
+    *state.codex.write().await = Some(client);
+    Ok(child)
+}
 fn mirror_item(
     channel_id: u64,
     item_type: &str,
