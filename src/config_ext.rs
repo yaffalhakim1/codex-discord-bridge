@@ -36,7 +36,7 @@ impl Default for ApprovalsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct BridgeConfig {
     pub mirror: MirrorConfig,
     pub stream: StreamConfig,
@@ -70,5 +70,27 @@ impl BridgeConfig {
             },
             Err(_) => Self::default(),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_autothread_camelcase_from_bridge_json() {
+        let text = r#"{
+            "mirror": {"agentMessages": true, "userMessages": false},
+            "autoThread": {"enabled": true, "categoryId": 1551250166219280404}
+        }"#;
+        let cfg: BridgeConfig = serde_json::from_str(text).expect("valid bridge.json");
+        assert!(cfg.auto_thread.enabled, "autoThread.enabled must parse");
+        assert_eq!(cfg.auto_thread.category_id, Some(1551250166219280404));
+    }
+
+    #[test]
+    fn missing_autothread_defaults_to_disabled() {
+        let cfg: BridgeConfig = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.auto_thread.enabled);
+        assert!(cfg.auto_thread.category_id.is_none());
     }
 }
