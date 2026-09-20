@@ -200,6 +200,24 @@ impl BridgeState {
         }
     }
 
+    pub async fn send_to_codex_with_images(
+        &self,
+        discord_channel_id: &u64,
+        text: &str,
+        image_urls: &[String],
+    ) -> Result<Option<String>, String> {
+        let codex_id = self
+            .reverse_map
+            .get(discord_channel_id)
+            .map(|v| v.value().clone())
+            .ok_or_else(|| "No thread mapped to this channel.".to_string())?;
+        let codex = self.codex.read().await;
+        let codex = codex
+            .as_ref()
+            .ok_or_else(|| "Codex client not connected.".to_string())?;
+        codex.start_turn_with_content(&codex_id, text, image_urls).await?;
+        Ok(Some("sent".to_string()))
+    }
     pub async fn steer_to_codex(&self, discord_channel_id: &u64, text: &str) -> Result<Option<String>, String> {
         let codex_id = self
             .reverse_map

@@ -157,8 +157,13 @@ impl EventHandler for DiscordHandler {
         // Show typing indicator while Codex works
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
+        let image_urls: Vec<String> = msg.attachments.iter().map(|a| a.url.clone()).collect();
         let result = if mapped {
-            self.state.send_to_codex(&channel_id, &text).await
+            if image_urls.is_empty() {
+                self.state.send_to_codex(&channel_id, &text).await
+            } else {
+                self.state.send_to_codex_with_images(&channel_id, &text, &image_urls).await
+            }
         } else {
             self.state.start_new_thread_in_channel(&channel_id, &text, None).await
         };

@@ -100,6 +100,10 @@ The bridge stays quiet when you send a message. Codex's reply appears when it's 
 | `/codex status` | Lists mapped threads |
 | `/codex retract` | Pulls back the last queued message |
 
+## Sending images
+
+Attach images to your message (screenshot, design, error photo). They arrive to Codex as `image_url` content items alongside your text. Works with @mention and replies.
+
 ## Configuration
 
 Optional `bridge.json` next to the binary. Copy `bridge.json.example` and edit. All keys are optional; defaults shown in the example.
@@ -140,5 +144,5 @@ Ordered by implementation priority.
 ### Phase 3: Polish
 
 7. ✅ **Config file** — `bridge.toml` to toggle what mirrors (file edits, reasoning, command output).
-8. **Auto-created threads** — one Discord thread per Codex thread under a category.
-9. **Image attachments** — send screenshots from your phone; the protocol accepts `input_image`.
+8. ✅ **Auto-created threads** — one Discord thread per Codex thread under a category.
+9. ✅ **Image attachments** — send screenshots from your phone; the protocol accepts `input_image`.

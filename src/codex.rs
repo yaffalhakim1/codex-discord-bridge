@@ -379,6 +379,18 @@ impl CodexClient {
         self.request("thread/resume", json!({ "threadId": thread_id })).await
     }
 
+    /// Start a turn with mixed content (text and/or image URLs).
+    /// input items follow the Codex protocol: {type:"text",text} and {type:"image_url",image_url}.
+    pub async fn start_turn_with_content(&self, thread_id: &str, text: &str, image_urls: &[String]) -> Result<Value, String> {
+        let mut input = Vec::new();
+        if !text.is_empty() {
+            input.push(json!({ "type": "text", "text": text }));
+        }
+        for url in image_urls {
+            input.push(json!({ "type": "image_url", "image_url": url }));
+        }
+        self.request("turn/start", json!({ "threadId": thread_id, "input": input })).await
+    }
     pub async fn steer_turn(&self, thread_id: &str, expected_turn_id: &str, text: &str) -> Result<Value, String> {
         self.request(
             "turn/steer",
