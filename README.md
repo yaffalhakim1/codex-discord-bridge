@@ -8,14 +8,72 @@ The bridge spawns `codex app-server --listen ws://127.0.0.1:8837` as a child pro
 
 ## Setup
 
+### Step 1: Build
+
 ```bash
 cargo build --release
 cp .env.example .env
-# Fill in your Discord credentials in .env
+```
+
+### Step 2: Create the Discord bot
+
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Click **New Application**. Name it (for example, `Codex Bridge`).
+3. Go to the **Bot** page in the left sidebar.
+4. Click **Reset Token**, then copy the token. This is `DISCORD_BOT_TOKEN`.
+5. On the same page, scroll down to **Privileged Gateway Intents** and enable **Message Content Intent**. The bridge needs this to read your messages.
+
+### Step 3: Get your IDs
+
+Enable Developer Mode first: in Discord, go to **User Settings → Advanced → Developer Mode** and turn it on. You only need to do this once. With Developer Mode on, right-clicking anything shows a **Copy ID** option.
+
+| Variable | How to get it |
+|---|---|
+| `DISCORD_APPLICATION_ID` | Developer Portal → your app → **General Information** → copy **Application ID** |
+| `DISCORD_GUILD_ID` | In Discord, right-click your **server name** → **Copy Server ID** |
+| `DISCORD_CONTROLLER_USER_ID` | In Discord, right-click **your own username** → **Copy User ID** |
+
+Only the user ID you put in `DISCORD_CONTROLLER_USER_ID` can talk to the bot. Everyone else is ignored.
+
+### Step 4: Invite the bot to your server
+
+Replace `<APP_ID>` with your Application ID, then open this URL in a browser:
+
+```
+https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot%20applications.commands&permissions=2147551296
+```
+
+Choose your server and approve. The bot should appear in the member list.
+
+### Step 5: Fill in `.env`
+
+Open `.env` and fill in the four Discord values you collected:
+
+```env
+DISCORD_BOT_TOKEN=your-bot-token-from-step-2
+DISCORD_APPLICATION_ID=1234567890123456789
+DISCORD_GUILD_ID=9876543210987654321
+DISCORD_CONTROLLER_USER_ID=1122334455667788990
+CODEX_COMMAND=codex
+CODEX_APP_SERVER_LISTEN_URL=ws://127.0.0.1:8837
+RUST_LOG=info
+```
+
+The last three lines usually don't need changing.
+
+### Step 6: Run
+
+```bash
 cargo run --release
 ```
 
-Required bot permissions: `View Channels`, `Send Messages`, `Send Messages in Threads`, `Read Message History`.
+You should see:
+
+```
+INFO codex_discord_bridge: Spawned codex app-server
+INFO codex_discord_bridge: Codex client ready.
+INFO codex_discord_bridge::discord: Discord bot ready as Codex Bridge
+```
 
 ## Talking to Codex
 
@@ -39,6 +97,10 @@ Codex responses mirror back into the channel you used.
 | `/codex new <prompt>` | Starts a new Codex thread. The bridge owns it, so you get full control |
 | `/codex status` | Lists mapped threads |
 | `/codex retract` | Pulls back the last queued message |
+
+## Running it
+
+The bridge must run on the same machine as Codex. Your PC does the work; Discord is the remote control. Keep the bridge running while you're away, and it forwards everything between Discord and Codex.
 
 ## Resource usage
 
