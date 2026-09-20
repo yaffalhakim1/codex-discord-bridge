@@ -70,3 +70,65 @@ mod tests {
         assert!(string_at(&o, 0).is_none());
     }
 }
+/// Pick a Discord thread name from a Codex thread's metadata.
+/// Empty strings are treated as absent. Preview is truncated to 40 chars with an ellipsis.
+pub fn thread_display_name(name: Option<&str>, preview: Option<&str>) -> String {
+    let from_name = name.map(str::trim).filter(|s| !s.is_empty());
+    let from_preview = preview
+        .map(|p| {
+            let t: String = p.chars().take(40).collect();
+            if p.chars().count() > 40 { format!("{t}…") } else { t }
+        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    from_name
+        .map(|s| s.to_string())
+        .or(from_preview)
+        .unwrap_or_else(|| "Codex thread".to_string())
+}
+
+#[cfg(test)]
+mod thread_name_tests {
+    use super::thread_display_name;
+
+    #[test]
+    fn prefers_name_when_present() {
+        assert_eq!(thread_display_name(Some("Fix login"), Some("preview")), "Fix login");
+    }
+
+    #[test]
+    fn falls_back_to_preview_when_name_missing() {
+        assert_eq!(thread_display_name(None, Some("build the thing")), "build the thing");
+    }
+
+    #[test]
+    fn empty_string_name_is_treated_as_missing() {
+        // This is the bug that shipped: Codex sends name=Some("") for new threads
+        assert_eq!(thread_display_name(Some(""), Some("hello")), "hello");
+    }
+
+    #[test]
+    fn empty_preview_falls_back_to_default() {
+        // And this: preview is Some("") too
+        assert_eq!(thread_display_name(Some(""), Some("")), "Codex thread");
+        assert_eq!(thread_display_name(None, Some("")), "Codex thread");
+    }
+
+    #[test]
+    fn whitespace_only_is_empty() {
+        assert_eq!(thread_display_name(Some("   "), Some("  ")), "Codex thread");
+    }
+
+    #[test]
+    fn long_preview_is_truncated_with_ellipsis() {
+        let long = "a".repeat(60);
+        let got = thread_display_name(None, Some(&long));
+        assert!(got.ends_with('…'));
+        assert_eq!(got.chars().count(), 41);
+    }
+
+    #[test]
+    fn everything_missing_uses_default() {
+        assert_eq!(thread_display_name(None, None), "Codex thread");
+    }
+}

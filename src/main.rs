@@ -314,15 +314,10 @@ fn handle_auto_thread(
         Some(c) => c,
         None => return,
     };
-    let name = thread
-        .name
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| thread.preview.as_ref().map(|p| {
-            let t: String = p.chars().take(40).collect();
-            if p.chars().count() > 40 { format!("{t}…") } else { t }
-        }))
-        .unwrap_or_else(|| "Codex thread".to_string());
+    let name = crate::options::thread_display_name(
+        thread.name.as_deref(),
+        thread.preview.as_deref(),
+    );
     let _ = outbound_tx.send(DiscordOutbound::CreateThread {
         category_id: category,
         name,
