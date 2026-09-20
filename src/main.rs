@@ -44,6 +44,7 @@ async fn main() {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<CodexEvent>();
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<DiscordOutbound>();
     let state = BridgeState::new(event_tx.clone());
+    state.load_state();
 
     // Spawn codex app-server process
     let listen_port = config.codex_port;

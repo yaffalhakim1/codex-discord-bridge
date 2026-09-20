@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::codex::{ApprovalRequest, CodexClient, CodexEvent};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ThreadMapping {
     pub codex_thread_id: String,
     pub discord_channel_id: u64,
@@ -66,6 +66,55 @@ impl BridgeState {
         })
     }
 
+    const STATE_PATH: &'static str = "data/state.json";
+
+    pub fn save_state(&self) {
+        let entries: Vec<ThreadMapping> = self.thread_map.iter().map(|e| e.value().clone()).collect();
+        let default_model = self.default_model.blocking_lock().clone();
+        let json = serde_json::json!({
+            "thread_map": entries,
+            "default_model": default_model,
+        });
+        if let Err(e) = std::fs::create_dir_all("data") {
+            warn!("Could not create data dir: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::write(Self::STATE_PATH, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+            warn!("Could not save state: {e}");
+        } else {
+            debug!("[state] saved {} mappings", entries.len());
+        }
+    }
+
+    pub fn load_state(&self) {
+        let text = match std::fs::read_to_string(Self::STATE_PATH) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(j) => j,
+            Err(e) => { warn!("Corrupt state file: {e}"); return; }
+        };
+        if let Some(entries) = json["thread_map"].as_array() {
+            for e in entries {
+                let codex_id = e["codex_thread_id"].as_str().unwrap_or("").to_string();
+                let channel = e["discord_channel_id"].as_u64().unwrap_or(0);
+                if !codex_id.is_empty() && channel != 0 {
+                    self.thread_map.insert(codex_id.clone(), ThreadMapping {
+                        codex_thread_id: codex_id.clone(),
+                        discord_channel_id: channel,
+                        created_at: e["created_at"].as_i64().unwrap_or(0),
+                        last_activity_at: e["last_activity_at"].as_i64(),
+                    });
+                    self.reverse_map.insert(channel, codex_id);
+                }
+            }
+        }
+        if let Some(m) = json["default_model"].as_str() {
+            *self.default_model.blocking_lock() = Some(m.to_string());
+        }
+        info!("[state] loaded {} mappings from disk", self.thread_map.len());
+    }
     pub fn map_thread(&self, codex_id: &str, discord_channel_id: u64) {
         let entry = ThreadMapping {
             codex_thread_id: codex_id.to_string(),
@@ -76,12 +125,14 @@ impl BridgeState {
         self.thread_map.insert(codex_id.to_string(), entry.clone());
         self.reverse_map.insert(discord_channel_id, codex_id.to_string());
         debug!("[state] mapped {codex_id} → channel {discord_channel_id}");
+        self.save_state();
     }
 
     pub fn unmap_thread(&self, codex_id: &str) {
         if let Some(entry) = self.thread_map.remove(codex_id) {
             self.reverse_map.remove(&entry.1.discord_channel_id);
         }
+        self.save_state();
     }
 
     pub async fn list_mapped_threads(&self) -> Vec<ThreadMapping> {
