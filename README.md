@@ -4,7 +4,7 @@ A 14MB Rust binary that connects [Codex](https://github.com/openai/codex) to Dis
 
 ## How it works
 
-The bridge spawns `codex app-server --listen ws://127.0.0.1:8837` as a child process, connects over WebSocket, and speaks JSON-RPC. Codex activity (agent messages, commands, approvals) mirrors into mapped Discord channels. When Codex needs your permission to run something, you get a card with Approve and Reject buttons.
+The bridge spawns `codex app-server --listen ws://127.0.0.1:8837` as a child process, connects over WebSocket, and speaks JSON-RPC. Codex replies mirror into the Discord channel you used. When Codex needs your permission to run something, you get a card with Approve and Reject buttons.
 
 ## Setup
 
@@ -85,7 +85,7 @@ You don't need slash commands for normal conversation.
 
 **DM the bot.** Each DM channel gets its own Codex thread.
 
-Codex responses mirror back into the channel you used.
+The bridge stays quiet when you send a message. Codex's reply appears when it's ready. If something breaks, the bot tells you what went wrong.
 
 ## Slash commands
 
@@ -95,6 +95,8 @@ Codex responses mirror back into the channel you used.
 | `/codex detach <thread_id>` | Removes the mapping |
 | `/codex send <text>` | Sends a message to the mapped thread (queues if Codex is busy) |
 | `/codex new <prompt>` | Starts a new Codex thread. The bridge owns it, so you get full control |
+| `/codex model` | Lists available models. Marks the default with ⭐ |
+| `/codex model set:<model_id>` | Sets the model for new threads. Existing threads keep theirs |
 | `/codex status` | Lists mapped threads |
 | `/codex retract` | Pulls back the last queued message |
 
