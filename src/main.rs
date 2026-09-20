@@ -214,20 +214,7 @@ fn mirror_item(
             if text.is_empty() { return; }
             text.to_string()
         }
-        "userMessage" => {
-            let text = item["content"][0]["text"].as_str().unwrap_or("");
-            if text.is_empty() { return; }
-            text.to_string()
-        }
-        "commandExecution" => {
-            let cmd = item["command"].as_str().unwrap_or("");
-            let status = item["status"].as_str().unwrap_or("");
-            format!("🖥️ **Command** ({status}): `{cmd}`")
-        }
         "reasoning" => return,
-        "fileChange" => {
-            format!("📝 **File change**: {}", item["id"].as_str().unwrap_or(""))
-        }
         _ => return,
     };
     let _ = outbound_tx.send(DiscordOutbound::Plain { channel_id, content });
