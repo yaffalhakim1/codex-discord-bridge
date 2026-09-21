@@ -73,7 +73,7 @@ Codex can install it directly:
 
 ```
 codex plugin marketplace add yaffalhakim1/codex-discord-bridge
-codex plugin add codex-discord-bridge
+codex plugin add codex-discord-bridge@codex-discord-bridge
 ```
 
 ## Development
