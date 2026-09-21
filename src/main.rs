@@ -422,8 +422,9 @@ fn handle_auto_thread(
         Some(c) => c,
         None => return,
     };
-    let name =
-        crate::options::thread_display_name(thread.name.as_deref(), thread.preview.as_deref());
+    let name = crate::options::thread_title_from_message(
+        thread.preview.as_deref().unwrap_or(thread.name.as_deref().unwrap_or("")),
+    );
     let _ = outbound_tx.send(DiscordOutbound::CreateThread {
         category_id: category,
         name,

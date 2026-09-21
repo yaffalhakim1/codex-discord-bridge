@@ -70,75 +70,57 @@ mod tests {
         assert!(string_at(&o, 0).is_none());
     }
 }
-/// Pick a Discord thread name from a Codex thread's metadata.
-/// Empty strings are treated as absent. Preview is truncated to 40 chars with an ellipsis.
-pub fn thread_display_name(name: Option<&str>, preview: Option<&str>) -> String {
-    let from_name = name.map(str::trim).filter(|s| !s.is_empty());
-    let from_preview = preview
-        .map(|p| {
-            let t: String = p.chars().take(40).collect();
-            if p.chars().count() > 40 {
-                format!("{t}…")
-            } else {
-                t
-            }
-        })
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    from_name
-        .map(|s| s.to_string())
-        .or(from_preview)
-        .unwrap_or_else(|| "Codex thread".to_string())
+/// Derive a Discord thread title from the user's first message.
+/// Whitespace collapsed, truncated to 80 chars on a word boundary with
+/// an ellipsis when cut, "Codex thread" when empty.
+pub fn thread_title_from_message(message: &str) -> String {
+    let collapsed = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "Codex thread".to_string();
+    }
+    if collapsed.chars().count() <= 80 {
+        return collapsed;
+    }
+    let truncated: String = collapsed.chars().take(77).collect();
+    match truncated.rfind(' ') {
+        Some(space) if space > 0 => truncated[..space].to_string() + "…",
+        _ => truncated + "…",
+    }
 }
 
 #[cfg(test)]
-mod thread_name_tests {
-    use super::thread_display_name;
+mod thread_title_tests {
+    use super::thread_title_from_message;
 
     #[test]
-    fn prefers_name_when_present() {
+    fn collapses_whitespace() {
         assert_eq!(
-            thread_display_name(Some("Fix login"), Some("preview")),
-            "Fix login"
+            thread_title_from_message("  fix\n\tthe   login  "),
+            "fix the login"
         );
     }
 
     #[test]
-    fn falls_back_to_preview_when_name_missing() {
-        assert_eq!(
-            thread_display_name(None, Some("build the thing")),
-            "build the thing"
-        );
+    fn exactly_80_chars_is_kept_intact() {
+        let m = "x".repeat(80);
+        assert_eq!(thread_title_from_message(&m), m);
     }
 
     #[test]
-    fn empty_string_name_is_treated_as_missing() {
-        // This is the bug that shipped: Codex sends name=Some("") for new threads
-        assert_eq!(thread_display_name(Some(""), Some("hello")), "hello");
+    fn no_space_in_first_77_hard_cuts() {
+        let m = "y".repeat(200);
+        let t = thread_title_from_message(&m);
+        assert_eq!(t.chars().count(), 78);
+        assert!(t.ends_with('…'));
     }
 
     #[test]
-    fn empty_preview_falls_back_to_default() {
-        // And this: preview is Some("") too
-        assert_eq!(thread_display_name(Some(""), Some("")), "Codex thread");
-        assert_eq!(thread_display_name(None, Some("")), "Codex thread");
-    }
-
-    #[test]
-    fn whitespace_only_is_empty() {
-        assert_eq!(thread_display_name(Some("   "), Some("  ")), "Codex thread");
-    }
-
-    #[test]
-    fn long_preview_is_truncated_with_ellipsis() {
-        let long = "a".repeat(60);
-        let got = thread_display_name(None, Some(&long));
-        assert!(got.ends_with('…'));
-        assert_eq!(got.chars().count(), 41);
-    }
-
-    #[test]
-    fn everything_missing_uses_default() {
-        assert_eq!(thread_display_name(None, None), "Codex thread");
+    fn cut_lands_on_word_boundary() {
+        let m = "lorem ipsum dolor sit amet consectetur adipiscing elit ".repeat(5);
+        let t = thread_title_from_message(&m);
+        assert!(t.ends_with('…'));
+        assert!(t.chars().count() <= 81);
+        let stem = t.trim_end_matches('…');
+        assert!(m[stem.len()..].starts_with(' '));
     }
 }
