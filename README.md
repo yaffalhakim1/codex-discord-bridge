@@ -1,148 +1,76 @@
-# codex-discord-bridge
+# Codex Discord Bridge
 
-A 14MB Rust binary that connects [Codex](https://github.com/openai/codex) to Discord. You monitor Codex work, approve commands and file edits, and send messages back to Codex from your phone.
+Control Codex CLI from Discord. A Rust (serenity) bridge that connects a
+Discord bot to the Codex app-server over WebSocket, so your whole dev loop
+runs in a Discord server you can reach from your phone.
 
-## How it works
+```
+Discord thread  <->  bridge (serenity bot)  <->  JSON-RPC over WebSocket  <->  codex app-server
+```
 
-The bridge spawns `codex app-server --listen ws://127.0.0.1:8837` as a child process, connects over WebSocket, and speaks JSON-RPC. Codex replies mirror into the Discord channel you used. When Codex needs your permission to run something, you get a card with Approve and Reject buttons.
+## What it does
+
+- Mention the bot in a channel: it starts a Codex thread and mirrors output
+  back live (streamed into one Discord message per turn).
+- Every Discord thread maps 1:1 to a Codex conversation; follow-up messages
+  in the thread continue the same conversation.
+- Approval requests (command exec, patches) arrive as Discord buttons with a
+  TTL, so Codex can ask permission mid-task while you are away from the desk.
+- Autothread mode: each conversation gets its own Discord thread under a
+  category you pick, titled from the first message.
+- Survives disconnects: 20s JSON-RPC keepalive, bounded supervisor with
+  capped backoff that reconnects the app-server without dropping your
+  Discord session or thread mappings.
+
+## Requirements
+
+- Rust toolchain (stable)
+- A Discord application + bot token (developer portal)
+- Codex CLI installed and authenticated (`codex` on PATH)
 
 ## Setup
 
-### Step 1: Build
+1. Clone this repo and copy `.env.example` to `.env`:
 
-```bash
-cargo build --release
-cp .env.example .env
-```
+   ```
+   DISCORD_TOKEN=your-bot-token
+   ```
 
-### Step 2: Create the Discord bot
+2. Copy `bridge.json.example` to `bridge.json` and adjust:
 
-1. Open the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Click **New Application**. Name it (for example, `Codex Bridge`).
-3. Go to the **Bot** page in the left sidebar.
-4. Click **Reset Token**, then copy the token. This is `DISCORD_BOT_TOKEN`.
-5. On the same page, scroll down to **Privileged Gateway Intents** and enable **Message Content Intent**. The bridge needs this to read your messages.
+   ```json
+   {
+     "mirror": { "agentMessages": true, "userMessages": false, "commands": false, "fileChanges": false },
+     "stream": { "live": true },
+     "approvals": { "ttlMinutes": 30 },
+     "autoThread": { "enabled": true, "categoryId": 123456789012345678 }
+   }
+   ```
 
-### Step 3: Get your IDs
+3. Build and run:
 
-Enable Developer Mode first: in Discord, go to **User Settings → Advanced → Developer Mode** and turn it on. You only need to do this once. With Developer Mode on, right-clicking anything shows a **Copy ID** option.
+   ```
+   cargo build --release
+   ./target/release/codex-discord-bridge
+   ```
 
-| Variable | How to get it |
-|---|---|
-| `DISCORD_APPLICATION_ID` | Developer Portal → your app → **General Information** → copy **Application ID** |
-| `DISCORD_GUILD_ID` | In Discord, right-click your **server name** → **Copy Server ID** |
-| `DISCORD_CONTROLLER_USER_ID` | In Discord, right-click **your own username** → **Copy User ID** |
+4. Invite the bot to your server, mention it in a channel, and code from bed.
 
-Only the user ID you put in `DISCORD_CONTROLLER_USER_ID` can talk to the bot. Everyone else is ignored.
+## Plugin manifest
 
-### Step 4: Invite the bot to your server
+This repository ships a Codex plugin manifest at
+`.codex-plugin/plugin.json`, so it can be referenced by a Codex plugin
+marketplace or installed locally as a plugin package. The manifest
+describes the bridge and its setup skill; the bridge binary itself is built
+from this repo with cargo.
 
-Replace `<APP_ID>` with your Application ID, then open this URL in a browser:
+## Stability notes
 
-```
-https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot%20applications.commands&permissions=2147551296
-```
+- Tests: `cargo test` (98+ tests, including reconnect and routing regression
+  suites that run in temp dirs and never touch production state).
+- The supervisor reuses an already-listening app-server when safe and only
+  kills children it owns.
 
-Choose your server and approve. The bot should appear in the member list.
+## License
 
-### Step 5: Fill in `.env`
-
-Open `.env` and fill in the four Discord values you collected:
-
-```env
-DISCORD_BOT_TOKEN=your-bot-token-from-step-2
-DISCORD_APPLICATION_ID=1234567890123456789
-DISCORD_GUILD_ID=9876543210987654321
-DISCORD_CONTROLLER_USER_ID=1122334455667788990
-CODEX_COMMAND=codex
-CODEX_APP_SERVER_LISTEN_URL=ws://127.0.0.1:8837
-RUST_LOG=info
-```
-
-The last three lines usually don't need changing.
-
-### Step 6: Run
-
-```bash
-cargo run --release
-```
-
-You should see:
-
-```
-INFO codex_discord_bridge: Spawned codex app-server
-INFO codex_discord_bridge: Codex client ready.
-INFO codex_discord_bridge::discord: Discord bot ready as Codex Bridge
-```
-
-## Talking to Codex
-
-You don't need slash commands for normal conversation.
-
-**@mention the bot** in any server channel. Your first message starts a new Codex thread mapped to that channel.
-
-**Reply to a bot message.** Your reply continues that same thread.
-
-**DM the bot.** Each DM channel gets its own Codex thread.
-
-The bridge stays quiet when you send a message. Codex's reply appears when it's ready. If something breaks, the bot tells you what went wrong.
-
-## Slash commands
-
-| Command | What it does |
-|---|---|
-| `/codex attach <thread_id>` | Maps an existing Codex thread to the current channel |
-| `/codex detach <thread_id>` | Removes the mapping |
-| `/codex send <text>` | Sends a message to the mapped thread (queues if Codex is busy) |
-| `/codex new <prompt>` | Starts a new Codex thread. The bridge owns it, so you get full control |
-| `/codex model` | Lists available models. Marks the default with ⭐ |
-| `/codex model set:<model_id>` | Sets the model for new threads. Existing threads keep theirs |
-| `/codex status` | Lists mapped threads |
-| `/codex retract` | Pulls back the last queued message |
-
-## Sending images
-
-Attach images to your message (screenshot, design, error photo). They arrive to Codex as `image_url` content items alongside your text. Works with @mention and replies.
-
-## Configuration
-
-Optional `bridge.json` next to the binary. Copy `bridge.json.example` and edit. All keys are optional; defaults shown in the example.
-
-| Key | Default | What it does |
-|---|---|---|
-| `mirror.agentMessages` | `true` | Post Codex replies into the mapped channel |
-| `mirror.userMessages` | `false` | Echo your own messages (usually noise) |
-| `mirror.commands` | `false` | Post command executions |
-| `mirror.fileChanges` | `false` | Post file edits |
-| `stream.live` | `true` | Edit one message live as Codex types |
-| `approvals.ttlMinutes` | `30` | Approval buttons stop working after this |
-
-## Running it
-
-The bridge must run on the same machine as Codex. Your PC does the work; Discord is the remote control. Keep the bridge running while you're away, and it forwards everything between Discord and Codex.
-
-## Resource usage
-
-One 14MB binary. The only other process is `codex app-server` at 80 to 100MB, which Codex itself spawns.
-
-## Roadmap
-
-Ordered by implementation priority.
-
-### Phase 1: Usability
-
-1. ✅ **Persist thread mappings** — save the channel-to-thread map to `data/state.json` so restarting the bridge doesn't lose your mappings.
-2. ✅ **`/codex stop`** — interrupt the running turn on the mapped thread (`turn/interrupt`).
-3. ✅ **`/codex threads`** — list recent Codex threads with IDs so you can `/codex attach` without digging through logs.
-
-### Phase 2: Better interaction
-
-4. ✅ **Steering** — `/codex send mode:steer` redirects the active turn instead of queueing (`turn/steer`).
-5. ✅ **Approval timeouts** — expire approval cards after 30 minutes and disable the buttons.
-6. ✅ **Live streaming** — buffer agent message deltas and edit one Discord message as Codex types.
-
-### Phase 3: Polish
-
-7. ✅ **Config file** — `bridge.toml` to toggle what mirrors (file edits, reasoning, command output).
-8. ✅ **Auto-created threads** — one Discord thread per Codex thread under a category.
-9. ✅ **Image attachments** — send screenshots from your phone; the protocol accepts `input_image`.
+MIT
