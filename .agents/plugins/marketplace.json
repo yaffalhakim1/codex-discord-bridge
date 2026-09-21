@@ -8,7 +8,7 @@
       "name": "codex-discord-bridge",
       "source": {
         "source": "local",
-        "path": "./"
+        "path": "./codex-packages/codex-discord-bridge"
       },
       "policy": {
         "installation": "AVAILABLE",
