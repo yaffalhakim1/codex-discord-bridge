@@ -1,10 +1,11 @@
 use dashmap::DashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::codex::{ApprovalRequest, CodexClient, CodexEvent};
+use crate::codex::{ApprovalRequest, CodexClient, CodexEvent, CodexTransport};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ThreadMapping {
@@ -44,8 +45,9 @@ pub struct PendingWriteBack {
     pub created_at: std::time::Instant,
 }
 
-pub struct BridgeState {
-    pub codex: RwLock<Option<Arc<CodexClient>>>,
+pub struct BridgeState<T: CodexTransport = CodexClient> {
+    state_path: PathBuf,
+    pub codex: RwLock<Option<Arc<T>>>,
     /// codex_thread_id → discord_channel_id
     pub thread_map: DashMap<String, ThreadMapping>,
     /// discord_channel_id → codex_thread_id (reverse lookup)
@@ -65,9 +67,27 @@ pub struct BridgeState {
 
 pub type SharedState = Arc<BridgeState>;
 
-impl BridgeState {
-    pub fn new(event_tx: mpsc::UnboundedSender<CodexEvent>) -> SharedState {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FreeFormRoute {
+    /// Continue an existing Codex thread already mapped to this Discord channel.
+    MappedCodexThread(String),
+    /// Start a new Codex thread; autoThread will create/map its Discord thread.
+    StartUnmappedThread,
+    /// Start a new Codex thread directly in the Discord channel.
+    StartThreadInChannel,
+}
+
+impl<T: CodexTransport> BridgeState<T> {
+    pub fn new(event_tx: mpsc::UnboundedSender<CodexEvent>) -> Arc<Self> {
+        Self::with_path(event_tx, Self::default_state_path().to_path_buf())
+    }
+
+    pub fn with_path(
+        event_tx: mpsc::UnboundedSender<CodexEvent>,
+        state_path: PathBuf,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            state_path,
             codex: RwLock::new(None),
             thread_map: DashMap::new(),
             reverse_map: DashMap::new(),
@@ -81,7 +101,11 @@ impl BridgeState {
         })
     }
 
-    const STATE_PATH: &'static str = "data/state.json";
+    const DEFAULT_STATE_PATH: &'static str = "data/state.json";
+
+    pub fn default_state_path() -> &'static Path {
+        Path::new(Self::DEFAULT_STATE_PATH)
+    }
 
     pub fn save_state(&self) {
         let entries: Vec<ThreadMapping> =
@@ -91,12 +115,14 @@ impl BridgeState {
             "thread_map": entries,
             "default_model": default_model,
         });
-        if let Err(e) = std::fs::create_dir_all("data") {
-            warn!("Could not create data dir: {e}");
+        if let Some(parent) = self.state_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            warn!("Could not create state directory {}: {e}", parent.display());
             return;
         }
         if let Err(e) = std::fs::write(
-            Self::STATE_PATH,
+            &self.state_path,
             serde_json::to_string_pretty(&json).unwrap_or_default(),
         ) {
             warn!("Could not save state: {e}");
@@ -106,7 +132,7 @@ impl BridgeState {
     }
 
     pub fn load_state(&self) {
-        let text = match std::fs::read_to_string(Self::STATE_PATH) {
+        let text = match std::fs::read_to_string(&self.state_path) {
             Ok(t) => t,
             Err(_) => return,
         };
@@ -136,9 +162,10 @@ impl BridgeState {
             }
         }
         if let Some(m) = json["default_model"].as_str()
-            && let Ok(mut g) = self.default_model.lock() {
-                *g = Some(m.to_string());
-            }
+            && let Ok(mut g) = self.default_model.lock()
+        {
+            *g = Some(m.to_string());
+        }
         info!(
             "[state] loaded {} mappings from disk",
             self.thread_map.len()
@@ -207,7 +234,7 @@ impl BridgeState {
     /// (e.g. bridge restarted with a fresh app-server), resume it from disk and retry once.
     async fn start_turn_resilient(
         &self,
-        codex: &CodexClient,
+        codex: &T,
         thread_id: &str,
         text: &str,
     ) -> Result<serde_json::Value, String> {
@@ -221,6 +248,51 @@ impl BridgeState {
             Err(e) => Err(e),
         }
     }
+
+    /// Retry every active mapped thread after a bounded app-server reconnect.
+    /// A fresh app-server process may not have in-memory threads loaded, so
+    /// existing Discord mappings must resume their Codex threads proactively.
+    pub async fn recover_after_reconnect(&self) {
+        let codex = self.codex.read().await;
+        let Some(codex) = codex.as_ref() else {
+            warn!("[state] reconnect recovery skipped: Codex not connected");
+            return;
+        };
+        let thread_ids: Vec<String> = self
+            .thread_map
+            .iter()
+            .map(|entry| entry.value().codex_thread_id.clone())
+            .collect();
+        for thread_id in thread_ids {
+            match codex.resume_thread(&thread_id).await {
+                Ok(_) => debug!("[state] resumed mapped thread {thread_id} after reconnect"),
+                Err(e) if e.contains("already") => {}
+                Err(e) => warn!("[state] failed to resume {thread_id} after reconnect: {e}"),
+            }
+        }
+    }
+    /// Resolve the Codex thread for a free-form Discord message.
+    /// Discord delivers messages inside public threads on the thread channel id,
+    /// so this lookup must use that id, not the parent channel id.
+    pub fn route_free_form_message(
+        &self,
+        discord_channel_id: u64,
+        auto_thread_enabled: bool,
+        auto_thread_category_id: Option<u64>,
+    ) -> FreeFormRoute {
+        if let Some(codex_thread_id) = self
+            .reverse_map
+            .get(&discord_channel_id)
+            .map(|v| v.value().clone())
+        {
+            return FreeFormRoute::MappedCodexThread(codex_thread_id);
+        }
+        if auto_thread_enabled && auto_thread_category_id.is_some() {
+            return FreeFormRoute::StartUnmappedThread;
+        }
+        FreeFormRoute::StartThreadInChannel
+    }
+
     pub async fn send_to_codex(
         &self,
         discord_channel_id: &u64,
@@ -325,9 +397,10 @@ impl BridgeState {
             .map(|v| v.value().clone())
             .ok_or_else(|| "No thread mapped.".to_string())?;
         if let Some(mut queue) = self.write_queue.get_mut(&codex_id)
-            && let Some(last) = queue.pop() {
-                return Ok(Some(last.text));
-            }
+            && let Some(last) = queue.pop()
+        {
+            return Ok(Some(last.text));
+        }
         Ok(None)
     }
 
@@ -524,5 +597,22 @@ impl BridgeState {
                 }
             }
         }
+    }
+
+    /// Snapshot active turns with their mapped Discord channel. Used to notify
+    /// queued writers before reconnect and clear stale turn ids after recovery.
+    pub fn mark_disconnected(&self) -> Vec<(u64, String)> {
+        let mut active = Vec::new();
+        for turn in self.last_turn.iter() {
+            let channel_id = *turn.key();
+            if let Some(codex_id) = self.reverse_map.get(&channel_id) {
+                active.push((channel_id, codex_id.value().clone()));
+            }
+        }
+        active
+    }
+
+    pub fn clear_active_turns(&self) {
+        self.last_turn.clear();
     }
 }

@@ -14,6 +14,7 @@ serenity = { version = "0.12", features = ["builder", "client", "gateway", "http
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dashmap = "6.2.1"
+async-trait = "0.1"
 dotenvy = "0.15.7"
 uuid = { version = "1.26.1", features = ["v4"] }
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -21,3 +22,6 @@ chrono = { version = "0.4.45", features = ["serde"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["test-util", "macros"] }
+tokio-tungstenite = "0.28"
+[lib]
+path = "src/lib.rs"

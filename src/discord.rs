@@ -15,7 +15,7 @@ use tracing::{error, info};
 use std::sync::OnceLock;
 
 use crate::config::Config;
-use crate::state::SharedState;
+use crate::state::{FreeFormRoute, SharedState};
 
 pub struct DiscordHandler {
     pub config: Config,
@@ -221,6 +221,16 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
+        let channel_id = msg.channel_id.get();
+
+        // Messages inside a mapped Discord thread arrive on the thread channel
+        // id and do not need a mention or direct reply. All other guild
+        // messages retain the existing authorization/intent gate.
+        let is_mapped_channel = self.state.reverse_map.contains_key(&channel_id);
+        if !is_dm && !is_mention && !is_reply_to_bot && !is_mapped_channel {
+            return;
+        }
+
         // Strip the mention from the content
         let raw = msg.content.clone();
         let text = raw
@@ -232,24 +242,35 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
-        let channel_id = msg.channel_id.get();
-        let _mapped = self.state.reverse_map.contains_key(&channel_id);
-
         // Show typing indicator while Codex works
         let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
         let image_urls: Vec<String> = msg.attachments.iter().map(|a| a.url.clone()).collect();
-        // Every free-form message spawns a fresh Codex thread (stateless chat).
-        // With autoThread on, the Discord thread is created by the ThreadStarted
+        // A mapped Discord thread always continues its mapped Codex thread.
+        // Only an unmapped first message starts a fresh Codex thread. With
+        // autoThread on, the Discord thread is created by the ThreadStarted
         // handler and mapping happens there instead of to this channel.
         let auto = self.state.auto_thread.lock().ok().map(|g| g.clone());
-        let result: Result<Option<String>, String> = match auto {
-            Some(cfg) if cfg.enabled && cfg.category_id.is_some() => self
+        let route = self.state.route_free_form_message(
+            channel_id,
+            auto.as_ref().is_some_and(|cfg| cfg.enabled),
+            auto.as_ref().and_then(|cfg| cfg.category_id),
+        );
+        let result: Result<Option<String>, String> = match route {
+            FreeFormRoute::MappedCodexThread(_) if image_urls.is_empty() => {
+                self.state.send_to_codex(&channel_id, &text).await
+            }
+            FreeFormRoute::MappedCodexThread(_) => {
+                self.state
+                    .send_to_codex_with_images(&channel_id, &text, &image_urls)
+                    .await
+            }
+            FreeFormRoute::StartUnmappedThread => self
                 .state
                 .start_thread_unmapped(&text, &image_urls)
                 .await
                 .map(|_| None),
-            _ => {
+            FreeFormRoute::StartThreadInChannel => {
                 self.state
                     .start_new_thread_in_channel_with_images(&channel_id, &text, &image_urls)
                     .await
@@ -690,6 +711,7 @@ impl DiscordHandler {
             .await;
     }
 }
+#[allow(clippy::result_large_err)] // serenity's HTTP error is public API here
 pub async fn post_approval_card(
     http: &Http,
     channel_id: u64,

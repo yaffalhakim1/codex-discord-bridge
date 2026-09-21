@@ -8,7 +8,9 @@ struct Approval {
 }
 
 impl Approval {
-    fn token(&self) -> &str { &self.token }
+    fn token(&self) -> &str {
+        &self.token
+    }
     fn is_expired(&self, now: Instant) -> bool {
         now.duration_since(self.created_at) > self.ttl
     }

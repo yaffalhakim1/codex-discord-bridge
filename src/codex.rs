@@ -8,7 +8,44 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tracing::{debug, error, info};
 
+#[async_trait::async_trait]
+pub trait CodexTransport: Send + Sync {
+    async fn start_thread(
+        &self,
+        cwd: &str,
+        approval_policy: &str,
+        sandbox: &str,
+        model: Option<&str>,
+    ) -> Result<String, String>;
+
+    async fn resume_thread(&self, thread_id: &str) -> Result<Value, String>;
+
+    async fn start_turn(&self, thread_id: &str, text: &str) -> Result<Value, String>;
+
+    async fn start_turn_with_content(
+        &self,
+        thread_id: &str,
+        text: &str,
+        image_urls: &[String],
+    ) -> Result<Value, String>;
+
+    async fn steer_turn(
+        &self,
+        thread_id: &str,
+        expected_turn_id: &str,
+        text: &str,
+    ) -> Result<Value, String>;
+
+    async fn respond_to_server_request(
+        &self,
+        request_id: &Value,
+        result: Value,
+    ) -> Result<(), String>;
+}
+
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ThreadInfo {
@@ -68,6 +105,53 @@ pub struct CodexClient {
     event_tx: mpsc::UnboundedSender<CodexEvent>,
 }
 
+#[async_trait::async_trait]
+impl CodexTransport for CodexClient {
+    async fn start_thread(
+        &self,
+        cwd: &str,
+        approval_policy: &str,
+        sandbox: &str,
+        model: Option<&str>,
+    ) -> Result<String, String> {
+        Self::start_thread(self, cwd, approval_policy, sandbox, model).await
+    }
+
+    async fn resume_thread(&self, thread_id: &str) -> Result<Value, String> {
+        Self::resume_thread(self, thread_id).await
+    }
+
+    async fn start_turn(&self, thread_id: &str, text: &str) -> Result<Value, String> {
+        Self::start_turn(self, thread_id, text).await
+    }
+
+    async fn start_turn_with_content(
+        &self,
+        thread_id: &str,
+        text: &str,
+        image_urls: &[String],
+    ) -> Result<Value, String> {
+        Self::start_turn_with_content(self, thread_id, text, image_urls).await
+    }
+
+    async fn steer_turn(
+        &self,
+        thread_id: &str,
+        expected_turn_id: &str,
+        text: &str,
+    ) -> Result<Value, String> {
+        Self::steer_turn(self, thread_id, expected_turn_id, text).await
+    }
+
+    async fn respond_to_server_request(
+        &self,
+        request_id: &Value,
+        result: Value,
+    ) -> Result<(), String> {
+        Self::respond_to_server_request(self, request_id, result).await
+    }
+}
+
 impl CodexClient {
     pub async fn connect(
         url: &str,
@@ -86,9 +170,35 @@ impl CodexClient {
             event_tx: event_tx.clone(),
         });
 
+        // Keep the TCP/WebSocket connection warm. Idle connections can be dropped by
+        // Windows networking or middleboxes; JSON-RPC pings also verify liveness.
+        let client_keepalive = client.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(PING_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                if client_keepalive
+                    .send_raw(json!({
+                        "jsonrpc": "2.0",
+                        "id": client_keepalive.next_id.fetch_add(1, Ordering::Relaxed),
+                        "method": "ping",
+                        "params": {}
+                    }))
+                    .await
+                    .is_err()
+                {
+                    debug!("[codex] keepalive stopped after send failure");
+                    break;
+                }
+            }
+        });
+
         // Read loop
         let pending_read = pending.clone();
         let event_tx_read = event_tx.clone();
+        let client_read = client.clone();
         let mut reader = stream;
         tokio::spawn(async move {
             while let Some(msg) = reader.next().await {
@@ -244,6 +354,7 @@ impl CodexClient {
                 }
             }
             info!("Codex read loop ended.");
+            Self::disconnect(&client_read).await;
             let _ = event_tx_read.send(CodexEvent::Disconnected);
         });
 
@@ -272,6 +383,24 @@ impl CodexClient {
         let thread_id = params["threadId"].as_str().unwrap_or("").to_string();
         let delta = params["delta"].as_str().unwrap_or("").to_string();
         CodexEvent::AgentMessageDelta { thread_id, delta }
+    }
+
+    /// Close the sink and fail pending calls as soon as the read loop ends.
+    /// Without this, the old client remains Some(...) during reconnect.
+    pub async fn disconnect(client: &Arc<Self>) {
+        if let Some(mut sink) = client.ws_tx.lock().await.take() {
+            let _ = sink.close().await;
+        }
+        let pending_ids: Vec<Value> = client
+            .pending
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for id in pending_ids {
+            if let Some((_, sender)) = client.pending.remove(&id) {
+                let _ = sender.send(Err("Codex connection closed.".into()));
+            }
+        }
     }
 
     async fn send_raw(&self, payload: Value) -> Result<(), String> {

@@ -61,7 +61,6 @@ pub struct AutoThreadConfig {
     pub category_id: Option<u64>,
 }
 
-
 impl BridgeConfig {
     pub fn load() -> Self {
         match std::fs::read_to_string("bridge.json") {

@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 /// TDD for live streaming: buffer deltas, debounce edits, chunk at Discord's limit.
-
 pub struct StreamBuffer {
     text: String,
     dirty: bool,

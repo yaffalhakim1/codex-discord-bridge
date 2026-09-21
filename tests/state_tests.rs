@@ -106,7 +106,7 @@ fn approval_lookup_by_token() {
     approvals.insert("tok-2".into(), "thread-b".into());
 
     assert_eq!(approvals.get("tok-1").map(|s| s.as_str()), Some("thread-a"));
-    assert!(approvals.get("missing").is_none());
+    assert!(!approvals.contains_key("missing"));
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn approval_removal_after_decision() {
     let mut approvals: HashMap<String, String> = HashMap::new();
     approvals.insert("tok-1".into(), "thread-a".into());
     approvals.remove("tok-1");
-    assert!(approvals.get("tok-1").is_none());
+    assert!(!approvals.contains_key("tok-1"));
 }
 
 // --- Decision payload shapes ---

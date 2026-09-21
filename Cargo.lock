@@ -185,6 +185,7 @@ dependencies = [
 name = "codex-discord-bridge"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "dashmap 6.2.1",
  "dotenvy",
