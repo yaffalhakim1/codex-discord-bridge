@@ -11,7 +11,12 @@ pub struct MirrorConfig {
 
 impl Default for MirrorConfig {
     fn default() -> Self {
-        Self { agent_messages: true, user_messages: false, commands: false, file_changes: false }
+        Self {
+            agent_messages: true,
+            user_messages: false,
+            commands: false,
+            file_changes: false,
+        }
     }
 }
 
@@ -22,7 +27,9 @@ pub struct StreamConfig {
 }
 
 impl Default for StreamConfig {
-    fn default() -> Self { Self { live: true } }
+    fn default() -> Self {
+        Self { live: true }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,7 +39,9 @@ pub struct ApprovalsConfig {
 }
 
 impl Default for ApprovalsConfig {
-    fn default() -> Self { Self { ttl_minutes: 30 } }
+    fn default() -> Self {
+        Self { ttl_minutes: 30 }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -46,14 +55,12 @@ pub struct BridgeConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(Default)]
 pub struct AutoThreadConfig {
     pub enabled: bool,
     pub category_id: Option<u64>,
 }
 
-impl Default for AutoThreadConfig {
-    fn default() -> Self { Self { enabled: false, category_id: None } }
-}
 
 impl BridgeConfig {
     pub fn load() -> Self {

@@ -28,12 +28,24 @@ impl Default for BridgeConfig {
 fn load(json: &str) -> BridgeConfig {
     let mut cfg = BridgeConfig::default();
     let v: Value = serde_json::from_str(json).unwrap();
-    if let Some(b) = v["mirror"]["agentMessages"].as_bool() { cfg.mirror_agent_messages = b; }
-    if let Some(b) = v["mirror"]["userMessages"].as_bool() { cfg.mirror_user_messages = b; }
-    if let Some(b) = v["mirror"]["commands"].as_bool() { cfg.mirror_commands = b; }
-    if let Some(b) = v["mirror"]["fileChanges"].as_bool() { cfg.mirror_file_changes = b; }
-    if let Some(b) = v["stream"]["live"].as_bool() { cfg.stream_live = b; }
-    if let Some(n) = v["approvals"]["ttlMinutes"].as_u64() { cfg.approval_ttl_minutes = n; }
+    if let Some(b) = v["mirror"]["agentMessages"].as_bool() {
+        cfg.mirror_agent_messages = b;
+    }
+    if let Some(b) = v["mirror"]["userMessages"].as_bool() {
+        cfg.mirror_user_messages = b;
+    }
+    if let Some(b) = v["mirror"]["commands"].as_bool() {
+        cfg.mirror_commands = b;
+    }
+    if let Some(b) = v["mirror"]["fileChanges"].as_bool() {
+        cfg.mirror_file_changes = b;
+    }
+    if let Some(b) = v["stream"]["live"].as_bool() {
+        cfg.stream_live = b;
+    }
+    if let Some(n) = v["approvals"]["ttlMinutes"].as_u64() {
+        cfg.approval_ttl_minutes = n;
+    }
     cfg
 }
 

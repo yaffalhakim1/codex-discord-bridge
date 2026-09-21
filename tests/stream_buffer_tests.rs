@@ -17,9 +17,21 @@ pub enum Flush {
     Idle,
 }
 
+impl Default for StreamBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamBuffer {
     pub fn new() -> Self {
-        Self { text: String::new(), dirty: false, last_flush: None, debounce: Duration::from_millis(1500), max_len: 1900 }
+        Self {
+            text: String::new(),
+            dirty: false,
+            last_flush: None,
+            debounce: Duration::from_millis(1500),
+            max_len: 1900,
+        }
     }
 
     pub fn push(&mut self, delta: &str) {
@@ -32,21 +44,26 @@ impl StreamBuffer {
         if !self.dirty {
             return Flush::Idle;
         }
-        let elapsed_ok = self.last_flush.map(|t| now.duration_since(t) >= self.debounce).unwrap_or(true);
+        let elapsed_ok = self
+            .last_flush
+            .map(|t| now.duration_since(t) >= self.debounce)
+            .unwrap_or(true);
         // Force flush when we're near Discord's limit even if debounce hasn't passed
         let near_limit = self.text.len() >= self.max_len;
         if elapsed_ok || near_limit {
             let text = std::mem::take(&mut self.text);
             self.dirty = false;
             self.last_flush = Some(now);
-            let is_full = text.len() >= self.max_len;
+            let _is_full = text.len() >= self.max_len;
             Flush::Edit(text)
         } else {
             Flush::Idle
         }
     }
 
-    pub fn is_empty(&self) -> bool { self.text.is_empty() && !self.dirty }
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && !self.dirty
+    }
 }
 
 #[test]
@@ -121,9 +138,13 @@ fn final_edits_accumulate_into_full_message() {
     let mut full = String::new();
     let mut b = StreamBuffer::new();
     b.push("Hello");
-    if let Flush::Edit(t) = b.maybe_flush(Instant::now()) { full.push_str(&t); }
+    if let Flush::Edit(t) = b.maybe_flush(Instant::now()) {
+        full.push_str(&t);
+    }
     b.push(" world");
     let later = Instant::now() + Duration::from_secs(2);
-    if let Flush::Edit(t) = b.maybe_flush(later) { full.push_str(&t); }
+    if let Flush::Edit(t) = b.maybe_flush(later) {
+        full.push_str(&t);
+    }
     assert_eq!(full, "Hello world");
 }

@@ -26,8 +26,18 @@ fn thread_mapping_serializes_roundtrip() {
 #[test]
 fn state_file_roundtrip_preserves_mappings() {
     let mappings = vec![
-        ThreadMapping { codex_thread_id: "t1".into(), discord_channel_id: 111, created_at: 1, last_activity_at: None },
-        ThreadMapping { codex_thread_id: "t2".into(), discord_channel_id: 222, created_at: 2, last_activity_at: Some(9) },
+        ThreadMapping {
+            codex_thread_id: "t1".into(),
+            discord_channel_id: 111,
+            created_at: 1,
+            last_activity_at: None,
+        },
+        ThreadMapping {
+            codex_thread_id: "t2".into(),
+            discord_channel_id: 222,
+            created_at: 2,
+            last_activity_at: Some(9),
+        },
     ];
     let state = json!({ "thread_map": mappings, "default_model": "gpt-5.5" });
     let text = serde_json::to_string_pretty(&state).unwrap();
@@ -49,7 +59,8 @@ fn corrupt_state_file_does_not_panic() {
 #[test]
 fn empty_state_file_loads_clean() {
     let empty = json!({ "thread_map": [], "default_model": null });
-    let parsed: serde_json::Value = serde_json::from_str(&serde_json::to_string(&empty).unwrap()).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&empty).unwrap()).unwrap();
     let entries = parsed["thread_map"].as_array().unwrap();
     assert!(entries.is_empty());
     assert!(parsed["default_model"].is_null());
@@ -58,13 +69,22 @@ fn empty_state_file_loads_clean() {
 // --- Write-back queue semantics ---
 
 #[derive(Debug, Clone, PartialEq)]
-struct WriteBack { id: String, text: String }
+struct WriteBack {
+    id: String,
+    text: String,
+}
 
 #[test]
 fn queue_accumulates_and_retracts_last() {
     let mut q: Vec<WriteBack> = Vec::new();
-    q.push(WriteBack { id: "1".into(), text: "first".into() });
-    q.push(WriteBack { id: "2".into(), text: "second".into() });
+    q.push(WriteBack {
+        id: "1".into(),
+        text: "first".into(),
+    });
+    q.push(WriteBack {
+        id: "2".into(),
+        text: "second".into(),
+    });
 
     let retracted = q.pop();
     assert_eq!(retracted.unwrap().text, "second");

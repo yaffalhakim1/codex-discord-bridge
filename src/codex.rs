@@ -1,11 +1,11 @@
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tracing::{debug, error, info};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -30,6 +30,7 @@ pub struct ThreadInfo {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // protocol-complete payload; fields kept for future approval UI
 pub struct ApprovalRequest {
     pub request_id: Value,
     pub method: String,
@@ -42,6 +43,7 @@ pub struct ApprovalRequest {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // event variants mirror full app-server protocol
 pub enum CodexEvent {
     ThreadStarted(ThreadInfo),
     ThreadStatusChanged { thread_id: String, status: Value },
@@ -57,9 +59,12 @@ pub enum CodexEvent {
 }
 
 pub struct CodexClient {
-    ws_tx: Mutex<Option<futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>>>,
+    ws_tx: Mutex<
+        Option<futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>>,
+    >,
     next_id: AtomicU64,
     pending: Arc<DashMap<Value, oneshot::Sender<Result<Value, String>>>>,
+    #[allow(dead_code)] // needed if the client ever emits events directly
     event_tx: mpsc::UnboundedSender<CodexEvent>,
 }
 
@@ -117,7 +122,10 @@ impl CodexClient {
                     let req_id = id.clone();
                     debug!("[codex] server request: {method}");
 
-                    let event = if method.contains("requestApproval") || method == "execCommandApproval" || method == "applyPatchApproval" {
+                    let event = if method.contains("requestApproval")
+                        || method == "execCommandApproval"
+                        || method == "applyPatchApproval"
+                    {
                         CodexEvent::ApprovalRequest(ApprovalRequest {
                             request_id: req_id.clone(),
                             method: method.to_string(),
@@ -132,17 +140,14 @@ impl CodexClient {
                                 .or_else(|| params["callId"].as_str())
                                 .unwrap_or("")
                                 .to_string(),
-                            command: params["command"]
-                                .as_str()
-                                .map(String::from)
-                                .or_else(|| {
-                                    params["command"].as_array().map(|a| {
-                                        a.iter()
-                                            .filter_map(|v| v.as_str())
-                                            .collect::<Vec<_>>()
-                                            .join(" ")
-                                    })
-                                }),
+                            command: params["command"].as_str().map(String::from).or_else(|| {
+                                params["command"].as_array().map(|a| {
+                                    a.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(" ")
+                                })
+                            }),
                             cwd: params["cwd"].as_str().map(String::from),
                             available_decisions: params.get("availableDecisions").cloned(),
                         })
@@ -165,7 +170,10 @@ impl CodexClient {
                 if let Some(id) = parsed.get("id") {
                     if let Some(entry) = pending_read.remove(id) {
                         let result = if let Some(err) = parsed.get("error") {
-                            Err(err["message"].as_str().unwrap_or("Unknown error").to_string())
+                            Err(err["message"]
+                                .as_str()
+                                .unwrap_or("Unknown error")
+                                .to_string())
                         } else {
                             Ok(parsed.get("result").cloned().unwrap_or_default())
                         };
@@ -270,7 +278,9 @@ impl CodexClient {
         let mut tx = self.ws_tx.lock().await;
         if let Some(sink) = tx.as_mut() {
             sink.send(tokio_tungstenite::tungstenite::Message::Text(
-                serde_json::to_string(&payload).map_err(|e| e.to_string())?.into(),
+                serde_json::to_string(&payload)
+                    .map_err(|e| e.to_string())?
+                    .into(),
             ))
             .await
             .map_err(|e| format!("WebSocket send failed: {e}"))?;
@@ -312,18 +322,30 @@ impl CodexClient {
     }
 
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
-        self.request_inner(method, params, Some(std::time::Duration::from_secs(30))).await
+        self.request_inner(method, params, Some(std::time::Duration::from_secs(30)))
+            .await
     }
 
-    pub async fn request_timeout(&self, method: &str, params: Value, timeout: std::time::Duration) -> Result<Value, String> {
+    #[allow(dead_code)] // reserved for long-running calls
+    pub async fn request_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value, String> {
         self.request_inner(method, params, Some(timeout)).await
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
-        self.send_raw(json!({ "jsonrpc": "2.0", "method": method, "params": params })).await
+        self.send_raw(json!({ "jsonrpc": "2.0", "method": method, "params": params }))
+            .await
     }
 
-    pub async fn respond_to_server_request(&self, request_id: &Value, result: Value) -> Result<(), String> {
+    pub async fn respond_to_server_request(
+        &self,
+        request_id: &Value,
+        result: Value,
+    ) -> Result<(), String> {
         self.send_raw(json!({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -334,7 +356,10 @@ impl CodexClient {
 
     pub async fn list_threads(&self, limit: i64) -> Result<Vec<ThreadInfo>, String> {
         let result = self
-            .request("thread/list", json!({ "limit": limit, "sortKey": "updated_at" }))
+            .request(
+                "thread/list",
+                json!({ "limit": limit, "sortKey": "updated_at" }),
+            )
             .await?;
         let data = result["data"].as_array().cloned().unwrap_or_default();
         Ok(data
@@ -343,8 +368,15 @@ impl CodexClient {
             .collect())
     }
 
-    pub async fn start_thread(&self, cwd: &str, approval_policy: &str, sandbox: &str, model: Option<&str>) -> Result<String, String> {
-        let mut params = json!({ "cwd": cwd, "approvalPolicy": approval_policy, "sandbox": sandbox });
+    pub async fn start_thread(
+        &self,
+        cwd: &str,
+        approval_policy: &str,
+        sandbox: &str,
+        model: Option<&str>,
+    ) -> Result<String, String> {
+        let mut params =
+            json!({ "cwd": cwd, "approvalPolicy": approval_policy, "sandbox": sandbox });
         if let Some(m) = model {
             params["model"] = json!(m);
         }
@@ -361,7 +393,13 @@ impl CodexClient {
         Ok(data)
     }
 
-    pub async fn start_turn_with_model(&self, thread_id: &str, text: &str, model: Option<&str>) -> Result<Value, String> {
+    #[allow(dead_code)] // used when per-thread model switching lands
+    pub async fn start_turn_with_model(
+        &self,
+        thread_id: &str,
+        text: &str,
+        model: Option<&str>,
+    ) -> Result<Value, String> {
         let params = if let Some(m) = model {
             json!({ "threadId": thread_id, "input": [{ "type": "text", "text": text }], "model": m })
         } else {
@@ -378,12 +416,18 @@ impl CodexClient {
     }
 
     pub async fn resume_thread(&self, thread_id: &str) -> Result<Value, String> {
-        self.request("thread/resume", json!({ "threadId": thread_id })).await
+        self.request("thread/resume", json!({ "threadId": thread_id }))
+            .await
     }
 
     /// Start a turn with mixed content (text and/or image URLs).
     /// input items follow the Codex protocol: {type:"text",text} and {type:"image_url",image_url}.
-    pub async fn start_turn_with_content(&self, thread_id: &str, text: &str, image_urls: &[String]) -> Result<Value, String> {
+    pub async fn start_turn_with_content(
+        &self,
+        thread_id: &str,
+        text: &str,
+        image_urls: &[String],
+    ) -> Result<Value, String> {
         let mut input = Vec::new();
         if !text.is_empty() {
             input.push(json!({ "type": "text", "text": text }));
@@ -391,9 +435,18 @@ impl CodexClient {
         for url in image_urls {
             input.push(json!({ "type": "image_url", "image_url": url }));
         }
-        self.request("turn/start", json!({ "threadId": thread_id, "input": input })).await
+        self.request(
+            "turn/start",
+            json!({ "threadId": thread_id, "input": input }),
+        )
+        .await
     }
-    pub async fn steer_turn(&self, thread_id: &str, expected_turn_id: &str, text: &str) -> Result<Value, String> {
+    pub async fn steer_turn(
+        &self,
+        thread_id: &str,
+        expected_turn_id: &str,
+        text: &str,
+    ) -> Result<Value, String> {
         self.request(
             "turn/steer",
             json!({ "threadId": thread_id, "expectedTurnId": expected_turn_id, "input": [{ "type": "text", "text": text }] }),
@@ -409,15 +462,21 @@ impl CodexClient {
         .map(|_| ())
     }
 
+    #[allow(dead_code)] // prefer respond_to_server_request at call sites
     pub async fn approve(&self, request_id: &Value) -> Result<(), String> {
-        self.respond_to_server_request(request_id, json!({ "decision": "accept" })).await
+        self.respond_to_server_request(request_id, json!({ "decision": "accept" }))
+            .await
     }
 
+    #[allow(dead_code)] // prefer respond_to_server_request at call sites
     pub async fn decline(&self, request_id: &Value) -> Result<(), String> {
-        self.respond_to_server_request(request_id, json!({ "decision": "decline" })).await
+        self.respond_to_server_request(request_id, json!({ "decision": "decline" }))
+            .await
     }
 
+    #[allow(dead_code)] // prefer respond_to_server_request at call sites
     pub async fn cancel(&self, request_id: &Value) -> Result<(), String> {
-        self.respond_to_server_request(request_id, json!({ "decision": "cancel" })).await
+        self.respond_to_server_request(request_id, json!({ "decision": "cancel" }))
+            .await
     }
 }

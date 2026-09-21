@@ -1,6 +1,7 @@
 use std::env;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // full .env contract surfaced even if some fields are unused today
 pub struct Config {
     pub discord_bot_token: String,
     pub discord_application_id: u64,
@@ -15,8 +16,8 @@ impl Config {
     pub fn from_env() -> Result<Self, String> {
         let _ = dotenvy::dotenv();
 
-        let bot_token = env::var("DISCORD_BOT_TOKEN")
-            .map_err(|_| "DISCORD_BOT_TOKEN is required in .env")?;
+        let bot_token =
+            env::var("DISCORD_BOT_TOKEN").map_err(|_| "DISCORD_BOT_TOKEN is required in .env")?;
         let app_id: u64 = env::var("DISCORD_APPLICATION_ID")
             .map_err(|_| "DISCORD_APPLICATION_ID is required")?
             .parse()
@@ -30,8 +31,8 @@ impl Config {
             .parse()
             .map_err(|_| "DISCORD_CONTROLLER_USER_ID must be a number")?;
         let codex_cmd = env::var("CODEX_COMMAND").unwrap_or_else(|_| "codex".to_string());
-        let listen_url =
-            env::var("CODEX_APP_SERVER_LISTEN_URL").unwrap_or_else(|_| "ws://127.0.0.1:8837".into());
+        let listen_url = env::var("CODEX_APP_SERVER_LISTEN_URL")
+            .unwrap_or_else(|_| "ws://127.0.0.1:8837".into());
         let port: u16 = listen_url
             .rsplit(':')
             .next()

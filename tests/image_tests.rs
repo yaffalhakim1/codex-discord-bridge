@@ -20,10 +20,13 @@ fn parse_attachments(urls: &[&str], text: &str) -> Vec<ContentItem> {
 }
 
 fn to_codex_input(items: &[ContentItem]) -> serde_json::Value {
-    let arr: Vec<serde_json::Value> = items.iter().map(|i| match i {
-        ContentItem::Text(t) => json!({ "type": "text", "text": t }),
-        ContentItem::Image { url } => json!({ "type": "image_url", "image_url": url }),
-    }).collect();
+    let arr: Vec<serde_json::Value> = items
+        .iter()
+        .map(|i| match i {
+            ContentItem::Text(t) => json!({ "type": "text", "text": t }),
+            ContentItem::Image { url } => json!({ "type": "image_url", "image_url": url }),
+        })
+        .collect();
     json!(arr)
 }
 

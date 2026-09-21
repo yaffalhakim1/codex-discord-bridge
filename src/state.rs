@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -23,6 +23,7 @@ pub struct StreamState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // audit fields kept for future approval detail views
 pub struct PendingApproval {
     pub token: String,
     pub request_id: serde_json::Value,
@@ -35,6 +36,7 @@ pub struct PendingApproval {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // id/thread metadata kept for audit
 pub struct PendingWriteBack {
     pub id: String,
     pub thread_id: String,
@@ -82,7 +84,8 @@ impl BridgeState {
     const STATE_PATH: &'static str = "data/state.json";
 
     pub fn save_state(&self) {
-        let entries: Vec<ThreadMapping> = self.thread_map.iter().map(|e| e.value().clone()).collect();
+        let entries: Vec<ThreadMapping> =
+            self.thread_map.iter().map(|e| e.value().clone()).collect();
         let default_model = self.default_model.lock().ok().and_then(|g| g.clone());
         let json = serde_json::json!({
             "thread_map": entries,
@@ -92,7 +95,10 @@ impl BridgeState {
             warn!("Could not create data dir: {e}");
             return;
         }
-        if let Err(e) = std::fs::write(Self::STATE_PATH, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+        if let Err(e) = std::fs::write(
+            Self::STATE_PATH,
+            serde_json::to_string_pretty(&json).unwrap_or_default(),
+        ) {
             warn!("Could not save state: {e}");
         } else {
             debug!("[state] saved {} mappings", entries.len());
@@ -106,27 +112,37 @@ impl BridgeState {
         };
         let json: serde_json::Value = match serde_json::from_str(&text) {
             Ok(j) => j,
-            Err(e) => { warn!("Corrupt state file: {e}"); return; }
+            Err(e) => {
+                warn!("Corrupt state file: {e}");
+                return;
+            }
         };
         if let Some(entries) = json["thread_map"].as_array() {
             for e in entries {
                 let codex_id = e["codex_thread_id"].as_str().unwrap_or("").to_string();
                 let channel = e["discord_channel_id"].as_u64().unwrap_or(0);
                 if !codex_id.is_empty() && channel != 0 {
-                    self.thread_map.insert(codex_id.clone(), ThreadMapping {
-                        codex_thread_id: codex_id.clone(),
-                        discord_channel_id: channel,
-                        created_at: e["created_at"].as_i64().unwrap_or(0),
-                        last_activity_at: e["last_activity_at"].as_i64(),
-                    });
+                    self.thread_map.insert(
+                        codex_id.clone(),
+                        ThreadMapping {
+                            codex_thread_id: codex_id.clone(),
+                            discord_channel_id: channel,
+                            created_at: e["created_at"].as_i64().unwrap_or(0),
+                            last_activity_at: e["last_activity_at"].as_i64(),
+                        },
+                    );
                     self.reverse_map.insert(channel, codex_id);
                 }
             }
         }
-        if let Some(m) = json["default_model"].as_str() {
-            if let Ok(mut g) = self.default_model.lock() { *g = Some(m.to_string()); }
-        }
-        info!("[state] loaded {} mappings from disk", self.thread_map.len());
+        if let Some(m) = json["default_model"].as_str()
+            && let Ok(mut g) = self.default_model.lock() {
+                *g = Some(m.to_string());
+            }
+        info!(
+            "[state] loaded {} mappings from disk",
+            self.thread_map.len()
+        );
     }
     pub fn map_thread(&self, codex_id: &str, discord_channel_id: u64) {
         // If this channel was mapped to a different thread, drop the stale mapping.
@@ -143,7 +159,8 @@ impl BridgeState {
             last_activity_at: None,
         };
         self.thread_map.insert(codex_id.to_string(), entry.clone());
-        self.reverse_map.insert(discord_channel_id, codex_id.to_string());
+        self.reverse_map
+            .insert(discord_channel_id, codex_id.to_string());
         debug!("[state] mapped {codex_id} → channel {discord_channel_id}");
         self.save_state();
     }
@@ -159,7 +176,11 @@ impl BridgeState {
         self.thread_map.iter().map(|e| e.value().clone()).collect()
     }
 
-    pub async fn attach_thread(&self, codex_thread_id: &str, discord_channel_id: u64) -> Result<(), String> {
+    pub async fn attach_thread(
+        &self,
+        codex_thread_id: &str,
+        discord_channel_id: u64,
+    ) -> Result<(), String> {
         let codex = self.codex.read().await;
         let codex = codex
             .as_ref()
@@ -200,7 +221,11 @@ impl BridgeState {
             Err(e) => Err(e),
         }
     }
-    pub async fn send_to_codex(&self, discord_channel_id: &u64, text: &str) -> Result<Option<String>, String> {
+    pub async fn send_to_codex(
+        &self,
+        discord_channel_id: &u64,
+        text: &str,
+    ) -> Result<Option<String>, String> {
         let codex_id = self
             .reverse_map
             .get(discord_channel_id)
@@ -211,7 +236,10 @@ impl BridgeState {
             .as_ref()
             .ok_or_else(|| "Codex client not connected.".to_string())?;
         // If a turn is active, queue. Otherwise send immediately.
-        let last_turn = self.last_turn.get(discord_channel_id).map(|v| v.value().clone());
+        let last_turn = self
+            .last_turn
+            .get(discord_channel_id)
+            .map(|v| v.value().clone());
         if last_turn.is_some() {
             let wb = PendingWriteBack {
                 id: Uuid::new_v4().to_string(),
@@ -219,7 +247,10 @@ impl BridgeState {
                 text: text.to_string(),
                 created_at: std::time::Instant::now(),
             };
-            self.write_queue.entry(codex_id.clone()).or_default().push(wb);
+            self.write_queue
+                .entry(codex_id.clone())
+                .or_default()
+                .push(wb);
             Ok(Some("queued".to_string()))
         } else {
             self.start_turn_resilient(codex, &codex_id, text).await?;
@@ -227,6 +258,7 @@ impl BridgeState {
         }
     }
 
+    #[allow(dead_code)] // used when autoThread is disabled
     pub async fn send_to_codex_with_images(
         &self,
         discord_channel_id: &u64,
@@ -242,21 +274,35 @@ impl BridgeState {
         let codex = codex
             .as_ref()
             .ok_or_else(|| "Codex client not connected.".to_string())?;
-        if let Err(e) = codex.start_turn_with_content(&codex_id, text, image_urls).await {
+        if let Err(e) = codex
+            .start_turn_with_content(&codex_id, text, image_urls)
+            .await
+        {
             if e.contains("not found") || e.contains("no rollout") {
                 codex.resume_thread(&codex_id).await?;
-                codex.start_turn_with_content(&codex_id, text, image_urls).await?;
-            } else { return Err(e); }
+                codex
+                    .start_turn_with_content(&codex_id, text, image_urls)
+                    .await?;
+            } else {
+                return Err(e);
+            }
         }
         Ok(Some("sent".to_string()))
     }
-    pub async fn steer_to_codex(&self, discord_channel_id: &u64, text: &str) -> Result<Option<String>, String> {
+    pub async fn steer_to_codex(
+        &self,
+        discord_channel_id: &u64,
+        text: &str,
+    ) -> Result<Option<String>, String> {
         let codex_id = self
             .reverse_map
             .get(discord_channel_id)
             .map(|v| v.value().clone())
             .ok_or_else(|| "No thread mapped to this channel.".to_string())?;
-        let active_turn = self.last_turn.get(discord_channel_id).map(|v| v.value().clone());
+        let active_turn = self
+            .last_turn
+            .get(discord_channel_id)
+            .map(|v| v.value().clone());
         let codex = self.codex.read().await;
         let codex = codex
             .as_ref()
@@ -269,65 +315,149 @@ impl BridgeState {
             Ok(Some("sent".to_string()))
         }
     }
-    pub async fn retract_pending(&self, discord_channel_id: &u64) -> Result<Option<String>, String> {
+    pub async fn retract_pending(
+        &self,
+        discord_channel_id: &u64,
+    ) -> Result<Option<String>, String> {
         let codex_id = self
             .reverse_map
             .get(discord_channel_id)
             .map(|v| v.value().clone())
             .ok_or_else(|| "No thread mapped.".to_string())?;
-        if let Some(mut queue) = self.write_queue.get_mut(&codex_id) {
-            if let Some(last) = queue.pop() {
+        if let Some(mut queue) = self.write_queue.get_mut(&codex_id)
+            && let Some(last) = queue.pop() {
                 return Ok(Some(last.text));
             }
-        }
         Ok(None)
     }
 
     /// Start a fresh Codex thread without mapping it to any channel.
     /// Used when autoThread is on: the Discord thread is created by the
     /// ThreadStarted handler and mapping happens there.
-    pub async fn start_thread_unmapped(&self, prompt: &str) -> Result<String, String> {
-        let codex = self.codex.read().await;
-        let codex = codex
-            .as_ref()
-            .ok_or_else(|| "Codex client not connected.".to_string())?;
+    pub async fn start_thread_unmapped(
+        &self,
+        prompt: &str,
+        image_urls: &[String],
+    ) -> Result<String, String> {
         let cwd = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
         let model = self.default_model.lock().ok().and_then(|g| g.clone());
-        let thread_id = codex.start_thread(&cwd, "on-request", "read-only", model.as_deref()).await?;
-        drop(codex);
-        let codex = self.codex.read().await;
-        if let Some(codex) = codex.as_ref() {
-            self.start_turn_resilient(codex, &thread_id, prompt).await?;
+        let thread_id = {
+            let codex = self.codex.read().await;
+            let codex = codex
+                .as_ref()
+                .ok_or_else(|| "Codex client not connected.".to_string())?;
+            codex
+                .start_thread(&cwd, "on-request", "read-only", model.as_deref())
+                .await?
+        };
+        {
+            let codex = self.codex.read().await;
+            if let Some(codex) = codex.as_ref() {
+                if image_urls.is_empty() {
+                    self.start_turn_resilient(codex, &thread_id, prompt).await?;
+                } else if let Err(e) = codex
+                    .start_turn_with_content(&thread_id, prompt, image_urls)
+                    .await
+                {
+                    if e.contains("not found") || e.contains("no rollout") {
+                        codex.resume_thread(&thread_id).await?;
+                        codex
+                            .start_turn_with_content(&thread_id, prompt, image_urls)
+                            .await?;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
         }
         Ok(thread_id)
     }
+
+    #[allow(dead_code)] // used when autoThread is disabled
     pub async fn start_new_thread_in_channel(
         &self,
         discord_channel_id: &u64,
         prompt: &str,
         model: Option<&str>,
     ) -> Result<Option<String>, String> {
-        let codex = self.codex.read().await;
-        let codex = codex
-            .as_ref()
-            .ok_or_else(|| "Codex client not connected.".to_string())?;
         let cwd = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
-        let model = match model { Some(m) => Some(m.to_string()), None => self.default_model.lock().ok().and_then(|g| g.clone()) };
-        let thread_id = codex.start_thread(&cwd, "on-request", "read-only", model.as_deref()).await?;
-        drop(codex);
+        let model = match model {
+            Some(m) => Some(m.to_string()),
+            None => self.default_model.lock().ok().and_then(|g| g.clone()),
+        };
+        let thread_id = {
+            let codex = self.codex.read().await;
+            let codex = codex
+                .as_ref()
+                .ok_or_else(|| "Codex client not connected.".to_string())?;
+            codex
+                .start_thread(&cwd, "on-request", "read-only", model.as_deref())
+                .await?
+        };
         self.map_thread(&thread_id, *discord_channel_id);
-        let codex = self.codex.read().await;
-        if let Some(codex) = codex.as_ref() {
-            self.start_turn_resilient(codex, &thread_id, prompt).await?;
+        {
+            let codex = self.codex.read().await;
+            if let Some(codex) = codex.as_ref() {
+                self.start_turn_resilient(codex, &thread_id, prompt).await?;
+            }
         }
-        self.last_turn.insert(*discord_channel_id, thread_id.clone());
+        self.last_turn
+            .insert(*discord_channel_id, thread_id.clone());
         Ok(None)
     }
-    pub async fn handle_approval_decision(&self, token: &str, decision: &str) -> Result<(), String> {
+    pub async fn start_new_thread_in_channel_with_images(
+        &self,
+        discord_channel_id: &u64,
+        prompt: &str,
+        image_urls: &[String],
+    ) -> Result<Option<String>, String> {
+        let cwd = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        let model = self.default_model.lock().ok().and_then(|g| g.clone());
+        let thread_id = {
+            let codex = self.codex.read().await;
+            let codex = codex
+                .as_ref()
+                .ok_or_else(|| "Codex client not connected.".to_string())?;
+            codex
+                .start_thread(&cwd, "on-request", "read-only", model.as_deref())
+                .await?
+        };
+        self.map_thread(&thread_id, *discord_channel_id);
+        {
+            let codex = self.codex.read().await;
+            if let Some(codex) = codex.as_ref() {
+                if image_urls.is_empty() {
+                    self.start_turn_resilient(codex, &thread_id, prompt).await?;
+                } else if let Err(e) = codex
+                    .start_turn_with_content(&thread_id, prompt, image_urls)
+                    .await
+                {
+                    if e.contains("not found") || e.contains("no rollout") {
+                        codex.resume_thread(&thread_id).await?;
+                        codex
+                            .start_turn_with_content(&thread_id, prompt, image_urls)
+                            .await?;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        self.last_turn
+            .insert(*discord_channel_id, thread_id.clone());
+        Ok(None)
+    }
+    pub async fn handle_approval_decision(
+        &self,
+        token: &str,
+        decision: &str,
+    ) -> Result<(), String> {
         let approval = self
             .approvals
             .get(token)

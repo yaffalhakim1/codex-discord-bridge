@@ -77,7 +77,11 @@ pub fn thread_display_name(name: Option<&str>, preview: Option<&str>) -> String 
     let from_preview = preview
         .map(|p| {
             let t: String = p.chars().take(40).collect();
-            if p.chars().count() > 40 { format!("{t}…") } else { t }
+            if p.chars().count() > 40 {
+                format!("{t}…")
+            } else {
+                t
+            }
         })
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
@@ -93,12 +97,18 @@ mod thread_name_tests {
 
     #[test]
     fn prefers_name_when_present() {
-        assert_eq!(thread_display_name(Some("Fix login"), Some("preview")), "Fix login");
+        assert_eq!(
+            thread_display_name(Some("Fix login"), Some("preview")),
+            "Fix login"
+        );
     }
 
     #[test]
     fn falls_back_to_preview_when_name_missing() {
-        assert_eq!(thread_display_name(None, Some("build the thing")), "build the thing");
+        assert_eq!(
+            thread_display_name(None, Some("build the thing")),
+            "build the thing"
+        );
     }
 
     #[test]

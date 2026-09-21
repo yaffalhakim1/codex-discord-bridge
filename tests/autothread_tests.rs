@@ -33,12 +33,21 @@ fn decide(
     // Name: explicit thread name, else first 40 chars of preview, else "Codex thread"
     let name = thread_name
         .map(|s| s.to_string())
-        .or_else(|| thread_preview.map(|p| {
-            let truncated: String = p.chars().take(40).collect();
-            if p.chars().count() > 40 { format!("{truncated}…") } else { truncated }
-        }))
+        .or_else(|| {
+            thread_preview.map(|p| {
+                let truncated: String = p.chars().take(40).collect();
+                if p.chars().count() > 40 {
+                    format!("{truncated}…")
+                } else {
+                    truncated
+                }
+            })
+        })
         .unwrap_or_else(|| "Codex thread".to_string());
-    Decision::CreateThread { category_id: category, name }
+    Decision::CreateThread {
+        category_id: category,
+        name,
+    }
 }
 
 #[test]
@@ -62,7 +71,13 @@ fn mapped_thread_is_skipped() {
 #[test]
 fn uses_thread_name_when_present() {
     let d = decide(true, Some(123), false, Some("Fix login bug"), None);
-    assert_eq!(d, Decision::CreateThread { category_id: 123, name: "Fix login bug".into() });
+    assert_eq!(
+        d,
+        Decision::CreateThread {
+            category_id: 123,
+            name: "Fix login bug".into()
+        }
+    );
 }
 
 #[test]
@@ -81,13 +96,25 @@ fn falls_back_to_preview_truncated() {
 #[test]
 fn short_preview_is_used_whole() {
     let d = decide(true, Some(123), false, None, Some("short"));
-    assert_eq!(d, Decision::CreateThread { category_id: 123, name: "short".into() });
+    assert_eq!(
+        d,
+        Decision::CreateThread {
+            category_id: 123,
+            name: "short".into()
+        }
+    );
 }
 
 #[test]
 fn no_name_no_preview_uses_fallback() {
     let d = decide(true, Some(123), false, None, None);
-    assert_eq!(d, Decision::CreateThread { category_id: 123, name: "Codex thread".into() });
+    assert_eq!(
+        d,
+        Decision::CreateThread {
+            category_id: 123,
+            name: "Codex thread".into()
+        }
+    );
 }
 
 #[test]
