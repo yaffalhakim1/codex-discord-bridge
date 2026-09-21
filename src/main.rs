@@ -3,9 +3,9 @@ mod config;
 mod config_ext;
 mod discord;
 mod options;
+mod poster;
 mod state;
 
-use serenity::all::{ChannelId, CreateMessage, MessageId};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,38 +16,15 @@ use tracing::{debug, error, info, warn};
 use codex::{CodexClient, CodexEvent};
 use config::Config;
 use config_ext::BridgeConfig;
-use state::{BridgeState, StreamState};
+use poster::{
+    SerenityPoster, finish_stream, handle_stream_delta, reset_stream, run_outbound_poster,
+    should_mirror_agent_message,
+};
+use state::BridgeState;
 
-/// A message to post to a Discord channel from the Codex event loop.
 static BRIDGE_CFG: std::sync::OnceLock<BridgeConfig> = std::sync::OnceLock::new();
 
-pub enum DiscordOutbound {
-    Plain {
-        channel_id: u64,
-        content: String,
-    },
-    EditStream {
-        channel_id: u64,
-        message_id: u64,
-        content: String,
-    },
-    StartStream {
-        channel_id: u64,
-        content: String,
-        thread_id: String,
-    },
-    CreateThread {
-        category_id: u64,
-        name: String,
-        codex_thread_id: String,
-    },
-    ApprovalCard {
-        channel_id: u64,
-        token: String,
-        title: String,
-        detail: String,
-    },
-}
+pub use poster::DiscordOutbound;
 
 #[tokio::main]
 async fn main() {
@@ -75,7 +52,7 @@ async fn main() {
     );
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<CodexEvent>();
-    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<DiscordOutbound>();
+    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<DiscordOutbound>();
     let state = BridgeState::new(event_tx.clone());
     *state.auto_thread.lock().unwrap() = bridge_cfg.auto_thread.clone();
     let codex_child: tokio::sync::Mutex<Option<tokio::process::Child>> =
@@ -139,96 +116,11 @@ async fn main() {
 
     // Outbound poster task: receives DiscordOutbound and sends via serenity http
     let state_for_poster = state.clone();
-    let poster = tokio::spawn(async move {
-        while let Some(msg) = outbound_rx.recv().await {
-            match msg {
-                DiscordOutbound::Plain {
-                    channel_id,
-                    content,
-                } => {
-                    let content = truncate_discord_message(content);
-                    let _ = ChannelId::new(channel_id)
-                        .send_message(&http, CreateMessage::new().content(content))
-                        .await;
-                }
-                DiscordOutbound::StartStream {
-                    channel_id,
-                    content,
-                    thread_id,
-                } => {
-                    match ChannelId::new(channel_id)
-                        .send_message(&http, CreateMessage::new().content(content))
-                        .await
-                    {
-                        Ok(msg) => {
-                            if let Some(mut st) = state_for_poster.streams.get_mut(&thread_id) {
-                                st.discord_message_id = Some(msg.id.get());
-                            }
-                        }
-                        Err(e) => error!("Failed to start stream: {e}"),
-                    }
-                }
-                DiscordOutbound::EditStream {
-                    channel_id,
-                    message_id,
-                    content,
-                } => {
-                    let content = truncate_discord_message(content);
-                    if let Err(e) = ChannelId::new(channel_id)
-                        .edit_message(
-                            &http,
-                            MessageId::new(message_id),
-                            serenity::builder::EditMessage::new().content(content),
-                        )
-                        .await
-                    {
-                        debug!("Stream edit failed (may be rate-limited): {e}");
-                    }
-                }
-                DiscordOutbound::CreateThread {
-                    category_id,
-                    name,
-                    codex_thread_id,
-                } => {
-                    info!(
-                        "[autothread] creating discord thread '{}' under {}",
-                        name, category_id
-                    );
-                    let payload = serde_json::json!({
-                        "name": name,
-                        "type": 11,
-                        "auto_archive_duration": 1440
-                    });
-                    match http
-                        .create_thread(ChannelId::new(category_id), &payload, None)
-                        .await
-                    {
-                        Ok(ch) => {
-                            let new_id = ch.id.get();
-                            state_for_poster.map_thread(&codex_thread_id, new_id);
-                            info!(
-                                "[autothread] created Discord thread {new_id} for Codex {codex_thread_id}"
-                            );
-                        }
-                        Err(e) => error!("[autothread] failed to create thread: {e}"),
-                    }
-                }
-                DiscordOutbound::ApprovalCard {
-                    channel_id,
-                    token,
-                    title,
-                    detail,
-                } => {
-                    if let Err(e) =
-                        discord::post_approval_card(&http, channel_id, &title, &detail, &token)
-                            .await
-                    {
-                        error!("Failed to post approval card: {e}");
-                    }
-                }
-            }
-        }
-    });
+    let poster = tokio::spawn(run_outbound_poster(
+        outbound_rx,
+        state_for_poster,
+        SerenityPoster { http },
+    ));
 
     let discord_handle = tokio::spawn(async move {
         if let Err(e) = discord_client.start().await {
@@ -244,14 +136,6 @@ async fn main() {
     // Cleanup
     poster.abort();
     discord_handle.abort();
-}
-
-fn truncate_discord_message(content: String) -> String {
-    if content.len() > 1900 {
-        format!("{}\n… (truncated)", &content[..1900])
-    } else {
-        content
-    }
 }
 
 fn backoff_delay(attempt: u32) -> Duration {
@@ -306,6 +190,7 @@ async fn handle_codex_event(
         }
         CodexEvent::TurnStarted { thread_id, turn_id } => {
             debug!("[bridge] turn started on {thread_id}: {turn_id}");
+            reset_stream(thread_id, state);
             if let Some(mapping) = state.thread_map.get(thread_id) {
                 let channel_id = mapping.discord_channel_id;
                 state.last_turn.insert(channel_id, turn_id.clone());
@@ -313,6 +198,12 @@ async fn handle_codex_event(
         }
         CodexEvent::TurnCompleted { thread_id, .. } => {
             debug!("[bridge] turn completed on {thread_id}");
+            finish_stream(
+                thread_id,
+                state,
+                outbound_tx,
+                BRIDGE_CFG.get().map(|c| c.stream.live).unwrap_or(true),
+            );
             if let Some(mapping) = state.thread_map.get(thread_id) {
                 let channel_id = mapping.discord_channel_id;
                 state.last_turn.remove(&channel_id);
@@ -329,13 +220,36 @@ async fn handle_codex_event(
         }
         CodexEvent::ItemCompleted { thread_id, item } => {
             let item_type = item["type"].as_str().unwrap_or("");
+            let mirror_allowed = should_mirror_agent_message(
+                BRIDGE_CFG
+                    .get()
+                    .map(|c| c.mirror.agent_messages)
+                    .unwrap_or(true),
+                BRIDGE_CFG.get().map(|c| c.stream.live).unwrap_or(true),
+                state
+                    .streams
+                    .try_read()
+                    .map(|s| s.contains_key(thread_id))
+                    .unwrap_or(false),
+            );
+            if item_type == "agentMessage" && !mirror_allowed {
+                // The live stream owns the corresponding Discord message.
+                return;
+            }
             if let Some(mapping) = state.thread_map.get(thread_id) {
                 let channel_id = mapping.discord_channel_id;
                 mirror_item(channel_id, item_type, item, outbound_tx);
             }
         }
         CodexEvent::AgentMessageDelta { thread_id, delta } => {
-            handle_stream_delta(thread_id, delta, state, outbound_tx);
+            handle_stream_delta(
+                thread_id,
+                delta,
+                state,
+                outbound_tx,
+                BRIDGE_CFG.get().map(|c| c.stream.live).unwrap_or(true),
+                std::time::Duration::from_millis(poster::STREAM_DEBOUNCE_MS),
+            );
         }
         CodexEvent::ApprovalRequest(req) => {
             info!("[bridge] approval request for thread {}", req.thread_id);
@@ -458,7 +372,7 @@ fn mirror_item(
 ) {
     let cfg = BRIDGE_CFG.get();
     let allowed = match item_type {
-        "agentMessage" => cfg.map(|c| c.mirror.agent_messages).unwrap_or(true),
+        "agentMessage" => true,
         "userMessage" => cfg.map(|c| c.mirror.user_messages).unwrap_or(false),
         "commandExecution" => cfg.map(|c| c.mirror.commands).unwrap_or(false),
         "fileChange" => cfg.map(|c| c.mirror.file_changes).unwrap_or(false),
@@ -515,62 +429,6 @@ fn handle_auto_thread(
         name,
         codex_thread_id: thread.id.clone(),
     });
-}
-fn handle_stream_delta(
-    thread_id: &str,
-    delta: &str,
-    state: &Arc<BridgeState>,
-    outbound_tx: &mpsc::UnboundedSender<DiscordOutbound>,
-) {
-    if BRIDGE_CFG.get().map(|c| !c.stream.live).unwrap_or(false) {
-        return;
-    }
-    const DEBOUNCE_MS: u128 = 1500;
-    const MAX_LEN: usize = 1900;
-    let channel_id = match state.thread_map.get(thread_id) {
-        Some(m) => m.discord_channel_id,
-        None => return,
-    };
-    let mut entry = state
-        .streams
-        .entry(thread_id.to_string())
-        .or_insert(StreamState {
-            text: String::new(),
-            discord_message_id: None,
-            last_flush: None,
-            dirty: false,
-        });
-    entry.text.push_str(delta);
-    entry.dirty = true;
-    let now = std::time::Instant::now();
-    let elapsed_ok = entry
-        .last_flush
-        .map(|t| now.duration_since(t).as_millis() >= DEBOUNCE_MS)
-        .unwrap_or(true);
-    let near_limit = entry.text.len() >= MAX_LEN;
-    if elapsed_ok || near_limit {
-        let text = std::mem::take(&mut entry.text);
-        entry.dirty = false;
-        entry.last_flush = Some(now);
-        let mid = entry.discord_message_id;
-        drop(entry);
-        match mid {
-            Some(id) => {
-                let _ = outbound_tx.send(DiscordOutbound::EditStream {
-                    channel_id,
-                    message_id: id,
-                    content: text,
-                });
-            }
-            None => {
-                let _ = outbound_tx.send(DiscordOutbound::StartStream {
-                    channel_id,
-                    content: text,
-                    thread_id: thread_id.to_string(),
-                });
-            }
-        }
-    }
 }
 fn handle_approval(
     req: &codex::ApprovalRequest,

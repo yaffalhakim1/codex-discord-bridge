@@ -21,6 +21,10 @@ pub struct StreamState {
     pub discord_message_id: Option<u64>,
     pub last_flush: Option<std::time::Instant>,
     pub dirty: bool,
+    /// The complete streamed response, not just the newest flush increment.
+    pub full_text: String,
+    /// The text Discord last received (start POST or successful edit).
+    pub last_flushed_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,8 +64,10 @@ pub struct BridgeState<T: CodexTransport = CodexClient> {
     pub last_turn: DashMap<u64, String>,
     pub default_model: std::sync::Mutex<Option<String>>,
     pub auto_thread: std::sync::Mutex<crate::config_ext::AutoThreadConfig>,
-    /// thread_id -> (accumulated_text, discord_message_id, last_flush)
-    pub streams: DashMap<String, StreamState>,
+    /// Codex thread id to its live Discord message state.
+    pub streams: tokio::sync::RwLock<std::collections::HashMap<String, StreamState>>,
+    /// Guards a first stream POST while its Discord message id is unknown.
+    pub pending_stream_starts: DashMap<String, ()>,
     pub event_tx: mpsc::UnboundedSender<CodexEvent>,
 }
 
@@ -96,7 +102,8 @@ impl<T: CodexTransport> BridgeState<T> {
             last_turn: DashMap::new(),
             default_model: std::sync::Mutex::new(None),
             auto_thread: std::sync::Mutex::new(crate::config_ext::AutoThreadConfig::default()),
-            streams: DashMap::new(),
+            streams: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            pending_stream_starts: DashMap::new(),
             event_tx,
         })
     }
@@ -108,8 +115,11 @@ impl<T: CodexTransport> BridgeState<T> {
     }
 
     pub fn save_state(&self) {
-        let entries: Vec<ThreadMapping> =
-            self.thread_map.iter().map(|e| e.value().clone()).collect();
+        let entries: Vec<ThreadMapping> = self
+            .thread_map
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         let default_model = self.default_model.lock().ok().and_then(|g| g.clone());
         let json = serde_json::json!({
             "thread_map": entries,
@@ -581,20 +591,27 @@ impl<T: CodexTransport> BridgeState<T> {
 
     /// Flush queued messages to codex when a turn completes.
     pub async fn flush_queue(&self, thread_id: &str) {
-        let queue = self.write_queue.get_mut(thread_id);
-        if let Some(mut q) = queue {
-            if q.is_empty() {
-                return;
+        // Take queued writes with a short-lived DashMap guard; never hold it
+        // across async work.
+        let msgs: Vec<String> = match self.write_queue.get_mut(thread_id) {
+            Some(mut queue) if !queue.is_empty() => {
+                queue.drain(..).map(|write| write.text).collect()
             }
-            let codex = self.codex.read().await;
-            if let Some(codex) = codex.as_ref() {
-                let msgs: Vec<String> = q.drain(..).map(|w| w.text).collect();
-                for msg in msgs {
-                    info!("[state] flushing queued message to {thread_id}");
-                    if let Err(e) = codex.start_turn(thread_id, &msg).await {
-                        error!("Failed to send queued message: {e}");
-                    }
-                }
+            _ => return,
+        };
+
+        let codex = self.codex.read().await;
+        let Some(codex) = codex.as_ref() else {
+            warn!(
+                "[state] queued {} write(s) for {thread_id} lost: Codex not connected",
+                msgs.len()
+            );
+            return;
+        };
+        for msg in msgs {
+            info!("[state] flushing queued message to {thread_id}");
+            if let Err(e) = codex.start_turn(thread_id, &msg).await {
+                error!("Failed to send queued message: {e}");
             }
         }
     }
