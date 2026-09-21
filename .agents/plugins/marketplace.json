@@ -1,0 +1,20 @@
+{
+  "name": "codex-discord-bridge",
+  "interface": {
+    "displayName": "Codex Discord Bridge"
+  },
+  "plugins": [
+    {
+      "name": "codex-discord-bridge",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
